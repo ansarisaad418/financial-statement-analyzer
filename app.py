@@ -1,6 +1,6 @@
 """
 Financial Statement Analyzer — Streamlit Frontend
-Dow Inc. Equity Research Dashboard
+Financial Analysis Dashboard
 
 Pipeline:
   1. User uploads Excel file
@@ -11,13 +11,11 @@ Pipeline:
 
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import json
 import os
 import tempfile
-from google import genai
 
 # ── PAGE CONFIG ───────────────────────────────────────────────────────────────
 
@@ -33,6 +31,13 @@ st.set_page_config(
 from engine import load_all_statements, normalize, calculate_metrics, generate_signals, build_output
 from interpreter import build_prompt, get_commentary, validate
 
+# ── API KEY — read from Streamlit secrets, fall back to sidebar input ─────────
+
+try:
+    api_key = st.secrets.get("GEMINI_API_KEY", "")
+except Exception:
+    api_key = ""
+
 # ── SESSION STATE ─────────────────────────────────────────────────────────────
 
 if "output" not in st.session_state:
@@ -45,15 +50,14 @@ if "model_used" not in st.session_state:
 # ── SIDEBAR ───────────────────────────────────────────────────────────────────
 
 with st.sidebar:
-    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/3/3e/Dow_Chemical_Company_logo.svg/320px-Dow_Chemical_Company_logo.svg.png", width=120)
     st.markdown("## ⚙️ Settings")
 
-    try:
-    api_key = st.secrets.get("GEMINI_API_KEY", "")
-except Exception:
-    api_key = ""
-if not api_key:
-    api_key = st.text_input("Gemini API Key", type="password", help="Your Gemini API key from Google AI Studio")
+    if not api_key:
+        api_key = st.text_input(
+            "Gemini API Key",
+            type="password",
+            help="Your Gemini API key from Google AI Studio"
+        )
 
     st.divider()
     st.markdown("### 📁 About")
@@ -74,7 +78,7 @@ if not api_key:
 # ── HEADER ────────────────────────────────────────────────────────────────────
 
 st.title("📊 Financial Statement Analyzer")
-st.caption("Deterministic signal engine + controlled AI interpretation · Dow Inc. (DOW)")
+st.caption("Deterministic signal engine + controlled AI interpretation")
 
 st.divider()
 
@@ -89,16 +93,13 @@ uploaded_file = st.file_uploader(
 if uploaded_file is not None and st.session_state.output is None:
     with st.spinner("Running engine — computing metrics and signals..."):
         try:
-            # Save uploaded file to a temp location so engine can read it
             with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
                 tmp.write(uploaded_file.read())
                 tmp_path = tmp.name
 
-            # Patch engine FILE_PATH dynamically
             import engine as eng
             eng.FILE_PATH = tmp_path
 
-            # Run pipeline
             income, balance, cashflow = load_all_statements()
             normalized = normalize(income, balance, cashflow)
             metrics = calculate_metrics(normalized)
@@ -171,22 +172,14 @@ if st.session_state.output is not None:
     # ── CHARTS ────────────────────────────────────────────────────────────────
     st.markdown("### 📈 Visual Analysis")
 
-    # Prepare numeric data for charts
     def get_pct(key):
-        return [
-            (metrics.get(y, {}).get(key) or 0) * 100
-            for y in years
-        ]
+        return [(metrics.get(y, {}).get(key) or 0) * 100 for y in years]
 
     def get_val(key):
-        return [
-            metrics.get(y, {}).get(key) or 0
-            for y in years
-        ]
+        return [metrics.get(y, {}).get(key) or 0 for y in years]
 
     years_int = [int(y) for y in years]
 
-    # ── Chart 1: Margin Waterfall ─────────────────────────────────────────────
     chart1, chart2 = st.columns(2)
 
     with chart1:
@@ -212,7 +205,6 @@ if st.session_state.output is not None:
         )
         st.plotly_chart(fig1, use_container_width=True)
 
-    # ── Chart 2: Cash Quality ─────────────────────────────────────────────────
     with chart2:
         st.markdown("#### Earnings Quality (FCF & CFO Conversion)")
         fig2 = go.Figure()
@@ -231,7 +223,6 @@ if st.session_state.output is not None:
         )
         st.plotly_chart(fig2, use_container_width=True)
 
-    # ── Chart 3: Leverage ─────────────────────────────────────────────────────
     chart3, chart4 = st.columns(2)
 
     with chart3:
@@ -255,7 +246,6 @@ if st.session_state.output is not None:
         fig3.update_yaxes(title_text="Interest Coverage (x)", secondary_y=True)
         st.plotly_chart(fig3, use_container_width=True)
 
-    # ── Chart 4: Liquidity ────────────────────────────────────────────────────
     with chart4:
         st.markdown("#### Liquidity Ratios")
         fig4 = go.Figure()
@@ -274,7 +264,6 @@ if st.session_state.output is not None:
         )
         st.plotly_chart(fig4, use_container_width=True)
 
-    # ── Chart 5: DuPont ROE Decomposition ────────────────────────────────────
     chart5, chart6 = st.columns(2)
 
     with chart5:
@@ -299,11 +288,10 @@ if st.session_state.output is not None:
         )
         st.plotly_chart(fig5, use_container_width=True)
 
-    # ── Chart 6: Capital Allocation ───────────────────────────────────────────
     with chart6:
         st.markdown("#### Capital Allocation vs FCF")
-        fcf_vals   = [abs(v) for v in get_val("fcf")]
-        cash_ret   = get_val("total_cash_returned")
+        fcf_vals = [abs(v) for v in get_val("fcf")]
+        cash_ret = get_val("total_cash_returned")
         fig6 = go.Figure()
         fig6.add_trace(go.Bar(x=years_int, y=fcf_vals,
             name="Free Cash Flow", marker_color="#4CAF50", opacity=0.85))
@@ -325,15 +313,13 @@ if st.session_state.output is not None:
 
     severity_colors = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🟢"}
     signal_colors   = {"NEGATIVE": "error", "WATCH": "warning", "POSITIVE": "success"}
-
-    # Sort by severity: HIGH first
-    severity_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
-    sorted_signals = sorted(signals, key=lambda s: severity_order.get(s["severity"], 3))
+    severity_order  = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+    sorted_signals  = sorted(signals, key=lambda s: severity_order.get(s["severity"], 3))
 
     for s in sorted_signals:
-        icon = severity_colors.get(s["severity"], "⚪")
+        icon     = severity_colors.get(s["severity"], "⚪")
         box_type = signal_colors.get(s["signal"], "info")
-        label = f"{icon} **{s['metric'].replace('_', ' ').title()}** — [{s['signal']}][{s['severity']}]"
+        label    = f"{icon} **{s['metric'].replace('_', ' ').title()}** — [{s['signal']}][{s['severity']}]"
 
         if box_type == "error":
             st.error(f"{label}\n\n{s['finding']}")
@@ -354,15 +340,11 @@ if st.session_state.output is not None:
         else:
             with st.spinner("Calling Gemini — generating analyst commentary..."):
                 try:
-                    # Temporarily set API key for interpreter
                     import interpreter as interp
-                    original_key = interp.API_KEY
                     interp.API_KEY = api_key
 
                     prompt = build_prompt(output)
                     commentary, model_used = get_commentary(prompt)
-
-                    interp.API_KEY = original_key
 
                     if commentary:
                         st.session_state.commentary = commentary
@@ -378,14 +360,12 @@ if st.session_state.output is not None:
 
         st.caption(f"Model: {st.session_state.model_used}")
 
-        # Validation check
         issues = validate(commentary, signals)
         if issues:
             st.warning("⚠️ Validation warnings detected:")
             for issue in issues:
                 st.caption(f"— {issue}")
 
-        # Parse and display each section cleanly
         sections = [
             "1. EXECUTIVE SUMMARY",
             "2. PROFITABILITY",
@@ -393,21 +373,15 @@ if st.session_state.output is not None:
             "4. BALANCE SHEET & LEVERAGE",
             "5. KEY RISKS TO MONITOR",
         ]
-
         section_icons = ["📌", "💰", "💵", "🏦", "⚠️"]
 
         for i, (section, icon) in enumerate(zip(sections, section_icons)):
-            # Find this section in the commentary
             start = commentary.find(section)
             if start == -1:
                 continue
-            # Find the next section start
             next_starts = [commentary.find(s) for s in sections[i+1:] if commentary.find(s) != -1]
             end = min(next_starts) if next_starts else len(commentary)
-
-            section_text = commentary[start:end].strip()
-            # Remove the section header from the text body
-            body = section_text[len(section):].strip()
+            body = commentary[start:end].strip()[len(section):].strip()
 
             with st.expander(f"{icon} {section}", expanded=True):
                 st.markdown(body)
@@ -416,7 +390,7 @@ if st.session_state.output is not None:
         st.download_button(
             label="⬇️ Download Full Commentary",
             data=commentary,
-            file_name="dow_analyst_commentary.txt",
+            file_name="analyst_commentary.txt",
             mime="text/plain",
             use_container_width=True
         )
