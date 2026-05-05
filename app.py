@@ -48,6 +48,11 @@ with st.sidebar:
     st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/3/3e/Dow_Chemical_Company_logo.svg/320px-Dow_Chemical_Company_logo.svg.png", width=120)
     st.markdown("## ⚙️ Settings")
 
+    try:
+    api_key = st.secrets.get("GEMINI_API_KEY", "")
+except Exception:
+    api_key = ""
+if not api_key:
     api_key = st.text_input("Gemini API Key", type="password", help="Your Gemini API key from Google AI Studio")
 
     st.divider()
