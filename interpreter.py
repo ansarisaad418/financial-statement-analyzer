@@ -11,12 +11,13 @@ Rules:
 
 import json
 import os
+import streamlit as st
 from google import genai
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 
-API_KEY = os.environ.get("GEMINI_API_KEY") or open("secrets.txt").read().strip()
-
+import streamlit as st
+API_KEY = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
 INPUT_FILE = "output.json"
 
 # ── LOAD COMPUTED DATA ────────────────────────────────────────────────────────
