@@ -154,7 +154,7 @@ def normalize(income, balance, cashflow):
             notes_payable     = get(balance, "Notes payable", year)
             pension_liability = get(balance, "Pension and other postretirement benefits - noncurrent", year)
             total_equity      = get(balance, "Total equity", year)
-            dow_equity        = get(balance, "Dow Inc.\u2019s stockholders\u2019 equity", year)
+            dow_equity = get(balance, "Dow Inc.'s stockholders' equity", year)
             retained_earnings = get(balance, "Retained earnings", year)
         else:
             # 2020 balance sheet not available
