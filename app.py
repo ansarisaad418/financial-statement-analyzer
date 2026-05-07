@@ -102,13 +102,6 @@ if uploaded_file is not None and st.session_state.output is None:
 
             income, balance, cashflow = load_all_statements()
             normalized = normalize(income, balance, cashflow)
-            
-            # --- DIAGNOSTIC INJECTION ---
-            st.warning(f"DEBUG 2022 Dow Equity: {normalized.get(2022, {}).get('dow_equity')}")
-            st.warning(f"DEBUG 2022 Net Income: {normalized.get(2022, {}).get('net_income_dow')}")
-            st.warning(f"DEBUG 2022 Total Assets: {normalized.get(2022, {}).get('total_assets')}")
-            # ----------------------------
-
             metrics = calculate_metrics(normalized)
             signals = generate_signals(metrics, normalized)
             output = build_output(normalized, metrics, signals)
