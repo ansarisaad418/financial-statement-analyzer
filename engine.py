@@ -93,7 +93,7 @@ def load_statement(sheet_name, year_columns):
 
 def load_all_statements():
     income = load_statement("Income Statement", YEARS)
-    balance = load_statement("Balance Sheet", [2022, 2021])
+    balance = load_statement("Balance Sheet", [2022, 2021, 2020, 2019])
     cashflow = load_statement("Cash Flow Statement", YEARS)
     return income, balance, cashflow
 
@@ -136,7 +136,7 @@ def normalize(income, balance, cashflow):
         net_income_dow   = get(income, "Net income available for Dow Inc. common stockholders", year)
 
         # ── Balance Sheet (only 2021 and 2022) ───────────────────────────────
-        if year in [2022, 2021]:
+        if year in [2022, 2021, 2020, 2019]:
             cash              = get(balance, "Cash and cash equivalents", year)
             trade_receivables = get(balance, "Trade (net of allowance for doubtful receivables - 2022: $110; 2021: $54)", year)
             other_receivables = get(balance, "Other", year)
