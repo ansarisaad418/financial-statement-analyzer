@@ -584,19 +584,66 @@ def build_output(normalized, metrics, signals):
     This is what gets sent to the AI — no raw line items, only computed values.
     """
 
-    # Year-over-year trend helper
-    def trend(metric, y1, y2):
-        v1 = metrics.get(y1, {}).get(metric)
-        v2 = metrics.get(y2, {}).get(metric)
-        if v1 is None or v2 is None:
-            return "insufficient_data"
-        if v2 > v1 * 1.01:
-            return "improving"
-        elif v2 < v1 * 0.99:
-            return "deteriorating"
-        else:
-            return "stable"
+# ── Upgraded Trend Engine ─────────────────────────────────────────────────
+    def analyze_trend(metric_name):
+        """Generates a rich trend dictionary: direction, yoy_change, magnitude, consistency."""
+        v20 = metrics.get(2020, {}).get(metric_name)
+        v21 = metrics.get(2021, {}).get(metric_name)
+        v22 = metrics.get(2022, {}).get(metric_name)
 
+        if v21 is None or v22 is None:
+            return {"direction": "insufficient_data", "yoy_change": None, "magnitude": None, "consistency": None}
+
+        # 1. Math routing: basis points for ratios, relative % for absolute dollars
+        is_ratio = "margin" in metric_name or "conversion" in metric_name or "ratio" in metric_name
+        
+        if is_ratio:
+            delta = v22 - v21
+            yoy_change = delta  
+            magnitude_val = abs(delta)
+            high_thresh, low_thresh = 0.05, 0.01  # 500 bps = high, 100 bps = moderate
+        else:
+            if v21 == 0: return {"direction": "not_meaningful", "yoy_change": None, "magnitude": None, "consistency": None}
+            delta = v22 - v21
+            yoy_change = delta / abs(v21)  
+            magnitude_val = abs(yoy_change)
+            high_thresh, low_thresh = 0.20, 0.05  # 20% = high, 5% = moderate
+
+        # 2. Direction
+        # Materiality threshold: 10 bps for margins, $1M for absolute dollars
+        threshold = 0.001 if is_ratio else 1.0 
+        
+        if delta > threshold: 
+            direction = "improving"
+        elif delta < -threshold: 
+            direction = "deteriorating"
+        else: 
+            direction = "stable"
+
+        # 3. Magnitude
+        if magnitude_val > high_thresh: magnitude = "high"
+        elif magnitude_val > low_thresh: magnitude = "moderate"
+        else: magnitude = "low"
+
+        # 4. Consistency
+        consistency = "insufficient_data"
+        if v20 is not None:
+            delta_prev = v21 - v20
+            if direction == "stable":
+                consistency = "stable"
+            elif (delta > 0 and delta_prev > 0) or (delta < 0 and delta_prev < 0):
+                consistency = "consistent"
+            else:
+                consistency = "volatile"
+
+        return {
+            "direction": direction,
+            "yoy_change": round(yoy_change, 4),
+            "magnitude": magnitude,
+            "consistency": consistency
+        }
+
+    # ── Assemble Output ───────────────────────────────────────────────────────
     output = {
         "company": "Dow Inc.",
         "ticker": "DOW",
@@ -609,18 +656,12 @@ def build_output(normalized, metrics, signals):
         },
 
         "trends": {
-            "core_operating_margin":  {"2020_to_2021": trend("core_operating_margin", 2020, 2021),
-                                       "2021_to_2022": trend("core_operating_margin", 2021, 2022)},
-            "gross_margin":           {"2020_to_2021": trend("gross_margin", 2020, 2021),
-                                       "2021_to_2022": trend("gross_margin", 2021, 2022)},
-            "net_margin":             {"2020_to_2021": trend("net_margin", 2020, 2021),
-                                       "2021_to_2022": trend("net_margin", 2021, 2022)},
-            "fcf_conversion":         {"2020_to_2021": trend("fcf_conversion", 2020, 2021),
-                                       "2021_to_2022": trend("fcf_conversion", 2021, 2022)},
-            "revenue":                {"2020_to_2021": trend("revenue", 2020, 2021),   # uses normalized
-                                       "2021_to_2022": trend("revenue", 2021, 2022)},
-            "ebitda_margin":          {"2020_to_2021": trend("ebitda_margin", 2020, 2021),
-                                       "2021_to_2022": trend("ebitda_margin", 2021, 2022)},
+            "core_operating_margin":  analyze_trend("core_operating_margin"),
+            "gross_margin":           analyze_trend("gross_margin"),
+            "net_margin":             analyze_trend("net_margin"),
+            "fcf_conversion":         analyze_trend("fcf_conversion"),
+            "revenue":                analyze_trend("revenue"),
+            "ebitda_margin":          analyze_trend("ebitda_margin"),
         },
 
         "signals": signals,
@@ -634,7 +675,7 @@ def build_output(normalized, metrics, signals):
         }
     }
 
-    return output
+    return output   
 
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
