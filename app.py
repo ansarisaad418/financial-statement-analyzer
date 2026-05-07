@@ -149,6 +149,10 @@ if st.session_state.output is not None:
         "Interest Coverage":      ("interest_coverage", "x"),
         "Asset Turnover":         ("asset_turnover", "x"),
         "ROE (Simple)":           ("roe_simple", "pct"),
+        "ROE (DuPont)":           ("roe_dupont", "pct"),
+        "DuPont — Tax Burden":    ("dupont_tax_burden", "x"),
+        "DuPont — Int. Burden":   ("dupont_interest_burden", "x"),
+        "DuPont — Leverage":      ("dupont_leverage_factor", "x"),
     }
 
     table_data = {}
