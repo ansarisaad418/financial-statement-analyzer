@@ -482,7 +482,7 @@ def generate_signals(metrics, normalized):
             restructuring_years.append(year)
     if len(restructuring_years) >= 2:
         add("restructuring", "WATCH", "MEDIUM",
-            f"Restructuring charges appear in {len(restructuring_years)} out of 3 years ({', '.join(str(y) for y in sorted(restructuring_years, reverse=True))}). Recurring 'non-recurring' charges are an earnings quality red flag.")
+            f"Restructuring charges appear in {len(restructuring_years)} out of {len(YEARS)} years ({', '.join(str(y) for y in sorted(restructuring_years, reverse=True))}). Recurring 'non-recurring' charges are an earnings quality red flag.")
 
     # ── Liquidity ─────────────────────────────────────────────────────────────
     if m22 and m22["current_ratio"] is not None:
@@ -572,7 +572,123 @@ def generate_signals(metrics, normalized):
                 add("leverage_coverage_interaction", "POSITIVE", "LOW",
                     f"Net Debt/EBITDA moved from {nd21:.1f}x to {nd22:.1f}x and interest coverage from {ic21:.1f}x "
                     f"to {ic22:.1f}x. Leverage and coverage are moving in a constructive direction.")
+# ── Pull all 5 years ──────────────────────────────────────────────────────
+    m18 = metrics.get(2018)
+    m19 = metrics.get(2019)
+    all_years = [2018, 2019, 2020, 2021, 2022]
+    all_m = {2018: m18, 2019: m19, 2020: m20, 2021: m21, 2022: m22}
 
+    # ── 5-Year Margin Trend (replaces 3-year) ─────────────────────────────────
+    margin_5yr = [(y, all_m[y]["core_operating_margin"])
+                  for y in all_years
+                  if all_m[y] and all_m[y].get("core_operating_margin") is not None]
+    if len(margin_5yr) >= 4:
+        vals = [v for _, v in margin_5yr]
+        yrs  = [y for y, _ in margin_5yr]
+        if all(vals[i] < vals[i-1] for i in range(1, len(vals))):
+            add("core_operating_margin_5yr", "NEGATIVE", "HIGH",
+                f"Core operating margin has deteriorated every year for {len(vals)} consecutive years: "
+                f"{' → '.join(f'{v:.1%}' for v in vals)} ({yrs[0]}–{yrs[-1]}).")
+        elif vals[-1] < vals[-2] and vals[-2] == max(vals):
+            add("core_operating_margin_5yr", "WATCH", "MEDIUM",
+                f"Core operating margin peaked at {vals[-2]:.1%} in {yrs[-2]} and has since contracted to "
+                f"{vals[-1]:.1%} in {yrs[-1]}, despite improvement in prior years.")
+
+    # ── Leverage Trend (5-year) ───────────────────────────────────────────────
+    nd_5yr = [(y, all_m[y]["net_debt_to_ebitda"])
+              for y in all_years
+              if all_m[y] and all_m[y].get("net_debt_to_ebitda") is not None]
+    if len(nd_5yr) >= 3:
+        nd_vals = [v for _, v in nd_5yr]
+        nd_yrs  = [y for y, _ in nd_5yr]
+        if all(nd_vals[i] > nd_vals[i-1] for i in range(1, len(nd_vals))):
+            add("leverage_trend", "NEGATIVE", "HIGH",
+                f"Net Debt/EBITDA has risen every year for {len(nd_vals)} consecutive years: "
+                f"{' → '.join(f'{v:.1f}x' for v in nd_vals)} ({nd_yrs[0]}–{nd_yrs[-1]}). "
+                f"Sustained leverage expansion is a structural risk.")
+        elif all(nd_vals[i] < nd_vals[i-1] for i in range(1, len(nd_vals))):
+            add("leverage_trend", "POSITIVE", "LOW",
+                f"Net Debt/EBITDA has declined consistently: "
+                f"{' → '.join(f'{v:.1f}x' for v in nd_vals)} ({nd_yrs[0]}–{nd_yrs[-1]}). "
+                f"Sustained deleveraging is a strong balance sheet signal.")
+
+    # ── Interest Coverage Trend (5-year) ─────────────────────────────────────
+    ic_5yr = [(y, all_m[y]["interest_coverage"])
+              for y in all_years
+              if all_m[y] and all_m[y].get("interest_coverage") is not None]
+    if len(ic_5yr) >= 3:
+        ic_vals = [v for _, v in ic_5yr]
+        ic_yrs  = [y for y, _ in ic_5yr]
+        if all(ic_vals[i] < ic_vals[i-1] for i in range(1, len(ic_vals))):
+            add("interest_coverage_trend", "NEGATIVE", "HIGH",
+                f"Interest coverage has declined every year: "
+                f"{' → '.join(f'{v:.1f}x' for v in ic_vals)} ({ic_yrs[0]}–{ic_yrs[-1]}). "
+                f"Sustained erosion of debt service capacity.")
+        elif ic_vals[-1] < ic_vals[-2] and max(ic_vals) == ic_vals[-2]:
+            add("interest_coverage_trend", "WATCH", "MEDIUM",
+                f"Interest coverage peaked at {ic_vals[-2]:.1f}x in {ic_yrs[-2]} and declined to "
+                f"{ic_vals[-1]:.1f}x in {ic_yrs[-1]}.")
+
+    # ── ROE Trend (5-year) ────────────────────────────────────────────────────
+    roe_5yr = [(y, all_m[y]["roe_simple"])
+               for y in all_years
+               if all_m[y] and all_m[y].get("roe_simple") is not None]
+    if len(roe_5yr) >= 3:
+        roe_vals = [v for _, v in roe_5yr]
+        roe_yrs  = [y for y, _ in roe_5yr]
+        if all(roe_vals[i] < roe_vals[i-1] for i in range(1, len(roe_vals))):
+            add("roe_trend", "NEGATIVE", "HIGH",
+                f"ROE has declined every year: "
+                f"{' → '.join(f'{v:.1%}' for v in roe_vals)} ({roe_yrs[0]}–{roe_yrs[-1]}). "
+                f"Structural erosion of shareholder returns.")
+        elif roe_vals[-1] < roe_vals[-2] and max(roe_vals) == roe_vals[-2]:
+            add("roe_trend", "WATCH", "MEDIUM",
+                f"ROE peaked at {roe_vals[-2]:.1%} in {roe_yrs[-2]} and contracted to "
+                f"{roe_vals[-1]:.1%} in {roe_yrs[-1]}.")
+        elif all(roe_vals[i] > roe_vals[i-1] for i in range(1, len(roe_vals))):
+            add("roe_trend", "POSITIVE", "LOW",
+                f"ROE has improved consistently: "
+                f"{' → '.join(f'{v:.1%}' for v in roe_vals)} ({roe_yrs[0]}–{roe_yrs[-1]}).")
+
+    # ── Revenue CAGR (5-year) ─────────────────────────────────────────────────
+    rev_5yr = [(y, normalized[y]["revenue"])
+               for y in all_years
+               if normalized.get(y) and normalized[y].get("revenue") is not None]
+    if len(rev_5yr) >= 2:
+        r_start_yr, r_start = rev_5yr[0]
+        r_end_yr,   r_end   = rev_5yr[-1]
+        n_years = r_end_yr - r_start_yr
+        if r_start and r_start > 0 and n_years > 0:
+            cagr = (r_end / r_start) ** (1 / n_years) - 1
+            if cagr >= 0.05:
+                add("revenue_cagr", "POSITIVE", "LOW",
+                    f"Revenue CAGR of {cagr:.1%} from {r_start_yr} to {r_end_yr} "
+                    f"(${r_start:,.0f}M → ${r_end:,.0f}M). Solid top-line growth over the period.")
+            elif cagr >= 0:
+                add("revenue_cagr", "WATCH", "LOW",
+                    f"Revenue CAGR of {cagr:.1%} from {r_start_yr} to {r_end_yr} "
+                    f"(${r_start:,.0f}M → ${r_end:,.0f}M). Modest growth — below inflation in real terms.")
+            else:
+                add("revenue_cagr", "NEGATIVE", "MEDIUM",
+                    f"Revenue declined at a {cagr:.1%} CAGR from {r_start_yr} to {r_end_yr} "
+                    f"(${r_start:,.0f}M → ${r_end:,.0f}M). Top-line contraction over the full period.")
+
+    # ── Liquidity Trend (5-year) ──────────────────────────────────────────────
+    liq_5yr = [(y, all_m[y]["current_ratio"])
+               for y in all_years
+               if all_m[y] and all_m[y].get("current_ratio") is not None]
+    if len(liq_5yr) >= 3:
+        liq_vals = [v for _, v in liq_5yr]
+        liq_yrs  = [y for y, _ in liq_5yr]
+        if all(liq_vals[i] < liq_vals[i-1] for i in range(1, len(liq_vals))):
+            add("liquidity_trend", "NEGATIVE", "MEDIUM",
+                f"Current ratio has declined every year: "
+                f"{' → '.join(f'{v:.2f}x' for v in liq_vals)} ({liq_yrs[0]}–{liq_yrs[-1]}). "
+                f"Sustained deterioration in short-term liquidity.")
+        elif all(liq_vals[i] > liq_vals[i-1] for i in range(1, len(liq_vals))):
+            add("liquidity_trend", "POSITIVE", "LOW",
+                f"Current ratio has improved consistently: "
+                f"{' → '.join(f'{v:.2f}x' for v in liq_vals)} ({liq_yrs[0]}–{liq_yrs[-1]}).")
     return signals
 
 
