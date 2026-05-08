@@ -572,7 +572,7 @@ def generate_signals(metrics, normalized):
                 add("leverage_coverage_interaction", "POSITIVE", "LOW",
                     f"Net Debt/EBITDA moved from {nd21:.1f}x to {nd22:.1f}x and interest coverage from {ic21:.1f}x "
                     f"to {ic22:.1f}x. Leverage and coverage are moving in a constructive direction.")
-# ── Pull all 5 years ──────────────────────────────────────────────────────
+    # ── Pull all 5 years ──────────────────────────────────────────────────────
     m18 = metrics.get(2018)
     m19 = metrics.get(2019)
     all_years = [2018, 2019, 2020, 2021, 2022]
