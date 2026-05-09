@@ -663,15 +663,15 @@ def generate_signals(metrics, normalized):
             if cagr >= 0.05:
                 add("revenue_cagr", "POSITIVE", "LOW",
                     f"Revenue CAGR of {cagr:.1%} from {r_start_yr} to {r_end_yr} "
-                    f"(${r_start:,.0f}M → ${r_end:,.0f}M). Solid top-line growth over the period.")
+                    f"(\\${r_start:,.0f}M → \\${r_end:,.0f}M). Solid top-line growth over the period.")
             elif cagr >= 0:
                 add("revenue_cagr", "WATCH", "LOW",
                     f"Revenue CAGR of {cagr:.1%} from {r_start_yr} to {r_end_yr} "
-                    f"(${r_start:,.0f}M → ${r_end:,.0f}M). Modest growth — below inflation in real terms.")
+                    f"(\\${r_start:,.0f}M → \\${r_end:,.0f}M). Modest growth — below inflation in real terms.")
             else:
                 add("revenue_cagr", "NEGATIVE", "MEDIUM",
                     f"Revenue declined at a {cagr:.1%} CAGR from {r_start_yr} to {r_end_yr} "
-                    f"(${r_start:,.0f}M → ${r_end:,.0f}M). Top-line contraction over the full period.")
+                    f"(\\${r_start:,.0f}M → \\${r_end:,.0f}M). Top-line contraction over the full period.")
 
     # ── Liquidity Trend (5-year) ──────────────────────────────────────────────
     liq_5yr = [(y, all_m[y]["current_ratio"])
