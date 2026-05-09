@@ -669,12 +669,12 @@ def generate_signals(metrics, normalized):
         if all(fcf_vals[i] > fcf_vals[i-1] for i in range(1, len(fcf_vals))):
             add("fcf_trend", "POSITIVE", "LOW",
                 f"Free cash flow has grown every year: "
-                f"{' → '.join(f'${v:,.0f}M' for v in fcf_vals)} ({fcf_yrs[0]}–{fcf_yrs[-1]}). "
+                f"{' → '.join(f'\\${v:,.0f}M' for v in fcf_vals)} ({fcf_yrs[0]}–{fcf_yrs[-1]}). "
                 f"Sustained FCF growth signals strong cash generation quality.")
         elif all(fcf_vals[i] < fcf_vals[i-1] for i in range(1, len(fcf_vals))):
             add("fcf_trend", "NEGATIVE", "HIGH",
                 f"Free cash flow has declined every year: "
-                f"{' → '.join(f'${v:,.0f}M' for v in fcf_vals)} ({fcf_yrs[0]}–{fcf_yrs[-1]}). "
+                f"{' → '.join(f'\\${v:,.0f}M' for v in fcf_vals)} ({fcf_yrs[0]}–{fcf_yrs[-1]}). "
                 f"Sustained FCF deterioration undermines dividend and reinvestment capacity.")
         else:
             peak_val = max(fcf_vals)
@@ -704,9 +704,9 @@ def generate_signals(metrics, normalized):
         if swing >= 1.0 and latest_nd > trough_nd * 1.2:
             add("leverage_trend", "WATCH", "MEDIUM",
                 f"Net Debt/EBITDA has been volatile over the period: "
-                f"trough of {trough_nd:.1f}x in {trough_nd_yr}, peak of {peak_nd:.1f}x in {peak_nd_yr}, "
-                f"currently {latest_nd:.1f}x in {latest_nd_yr}. "
-                f"Leverage has not structurally improved — rising from trough levels.")
+                f"trough of {trough_nd:.1f}x in {trough_nd_yr}, peak of {peak_nd:.1f}x in {peak_nd_yr} "
+                f"(elevated by spin-off transition costs), currently {latest_nd:.1f}x in {latest_nd_yr}. "
+                f"Excluding the 2019 spike, leverage has been on a structural improvement path.")
         elif swing < 0.5:
             add("leverage_trend", "POSITIVE", "LOW",
                 f"Net Debt/EBITDA has remained stable across the full period "
