@@ -369,6 +369,89 @@ def calculate_metrics(normalized):
             "dupont_tax_burden":        tax_burden,
             "dupont_interest_burden":   interest_burden,
             "dupont_leverage_factor":   leverage_factor,
+        # ── FCF Trend (5-year) ────────────────────────────────────────────────────
+    fcf_5yr = [(y, all_m[y]["fcf"])
+               for y in all_years
+               if all_m[y] and all_m[y].get("fcf") is not None]
+    if len(fcf_5yr) >= 3:
+        fcf_vals = [v for _, v in fcf_5yr]
+        fcf_yrs  = [y for y, _ in fcf_5yr]
+        if all(fcf_vals[i] > fcf_vals[i-1] for i in range(1, len(fcf_vals))):
+            add("fcf_trend", "POSITIVE", "LOW",
+                f"Free cash flow has grown every year: "
+                f"{' → '.join(f'${v:,.0f}M' for v in fcf_vals)} ({fcf_yrs[0]}–{fcf_yrs[-1]}). "
+                f"Sustained FCF growth signals strong cash generation quality.")
+        elif all(fcf_vals[i] < fcf_vals[i-1] for i in range(1, len(fcf_vals))):
+            add("fcf_trend", "NEGATIVE", "HIGH",
+                f"Free cash flow has declined every year: "
+                f"{' → '.join(f'${v:,.0f}M' for v in fcf_vals)} ({fcf_yrs[0]}–{fcf_yrs[-1]}). "
+                f"Sustained FCF deterioration undermines dividend and reinvestment capacity.")
+        else:
+            peak_val = max(fcf_vals)
+            peak_yr  = fcf_yrs[fcf_vals.index(peak_val)]
+            latest_val = fcf_vals[-1]
+            latest_yr  = fcf_yrs[-1]
+            if latest_val < peak_val * 0.75:
+                add("fcf_trend", "WATCH", "MEDIUM",
+                    f"Free cash flow peaked at ${peak_val:,.0f}M in {peak_yr} and has since fallen to "
+                    f"${latest_val:,.0f}M in {latest_yr} — a {((latest_val-peak_val)/abs(peak_val)):.1%} decline from peak. "
+                    f"FCF volatility warrants monitoring.")
+
+    # ── Leverage Trend — Volatile / Peak Pattern ──────────────────────────────
+    nd_all = [(y, all_m[y]["net_debt_to_ebitda"])
+              for y in all_years
+              if all_m[y] and all_m[y].get("net_debt_to_ebitda") is not None]
+    if len(nd_all) >= 3:
+        nd_vals = [v for _, v in nd_all]
+        nd_yrs  = [y for y, _ in nd_all]
+        peak_nd  = max(nd_vals)
+        peak_nd_yr = nd_yrs[nd_vals.index(peak_nd)]
+        latest_nd  = nd_vals[-1]
+        latest_nd_yr = nd_yrs[-1]
+        trough_nd = min(nd_vals)
+        trough_nd_yr = nd_yrs[nd_vals.index(trough_nd)]
+        swing = peak_nd - trough_nd
+        if swing >= 1.0 and latest_nd > trough_nd * 1.2:
+            add("leverage_trend", "WATCH", "MEDIUM",
+                f"Net Debt/EBITDA has been volatile over the period: "
+                f"trough of {trough_nd:.1f}x in {trough_nd_yr}, peak of {peak_nd:.1f}x in {peak_nd_yr}, "
+                f"currently {latest_nd:.1f}x in {latest_nd_yr}. "
+                f"Leverage has not structurally improved — rising from trough levels.")
+        elif swing < 0.5:
+            add("leverage_trend", "POSITIVE", "LOW",
+                f"Net Debt/EBITDA has remained stable across the full period "
+                f"(range: {trough_nd:.1f}x – {peak_nd:.1f}x). Consistent leverage management.")
+
+    # ── Dividend Sustainability (5-year) ──────────────────────────────────────
+    div_5yr = []
+    for y in all_years:
+        n = normalized.get(y, {})
+        m = all_m.get(y)
+        div = n.get("dividends_paid")
+        fcf_val = m.get("fcf") if m else None
+        if div is not None and fcf_val is not None and fcf_val > 0:
+            div_5yr.append((y, abs(div), fcf_val, abs(div) / fcf_val))
+
+    if len(div_5yr) >= 3:
+        ratios     = [r for _, _, _, r in div_5yr]
+        div_yrs    = [y for y, _, _, _ in div_5yr]
+        avg_ratio  = sum(ratios) / len(ratios)
+        latest_ratio = ratios[-1]
+        latest_div_yr = div_yrs[-1]
+        if avg_ratio > 0.75:
+            add("dividend_sustainability", "NEGATIVE", "HIGH",
+                f"Dividends have consumed an average of {avg_ratio:.1%} of FCF over {len(div_5yr)} years "
+                f"({div_yrs[0]}–{div_yrs[-1]}). Sustained high payout leaves minimal buffer — "
+                f"any FCF compression would put the dividend at risk.")
+        elif avg_ratio > 0.50:
+            add("dividend_sustainability", "WATCH", "MEDIUM",
+                f"Dividends have averaged {avg_ratio:.1%} of FCF over {len(div_5yr)} years "
+                f"({div_yrs[0]}–{div_yrs[-1]}). Manageable but leaves limited reinvestment capacity. "
+                f"Latest year payout ratio: {latest_ratio:.1%} in {latest_div_yr}.")
+        else:
+            add("dividend_sustainability", "POSITIVE", "LOW",
+                f"Dividends have averaged {avg_ratio:.1%} of FCF over {len(div_5yr)} years "
+                f"({div_yrs[0]}–{div_yrs[-1]}). Dividend is well-covered with room for reinvestment.")
         }
 
     return metrics
