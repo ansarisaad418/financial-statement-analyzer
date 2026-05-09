@@ -396,24 +396,6 @@ def generate_signals(metrics, normalized):
 
     m22, m21, m20 = metrics.get(2022), metrics.get(2021), metrics.get(2020)
 
-    # ── Margin Trend ──────────────────────────────────────────────────────────
-    margins = [
-        ("2020", m20["core_operating_margin"] if m20 else None),
-        ("2021", m21["core_operating_margin"] if m21 else None),
-        ("2022", m22["core_operating_margin"] if m22 else None),
-    ]
-    margin_values = [v for _, v in margins if v is not None]
-    if len(margin_values) == 3:
-        if margin_values[2] < margin_values[1] and margin_values[1] > margin_values[0]:
-            add("core_operating_margin", "WATCH", "MEDIUM",
-                f"Core operating margin peaked in 2021 ({margin_values[1]:.1%}) and contracted in 2022 ({margin_values[2]:.1%}). Monitor for continued deterioration.")
-        elif all(margin_values[i] > margin_values[i-1] for i in range(1, 3)):
-            add("core_operating_margin", "POSITIVE", "LOW",
-                f"Core operating margin expanded consistently: {margin_values[0]:.1%} → {margin_values[1]:.1%} → {margin_values[2]:.1%}.")
-        elif all(margin_values[i] < margin_values[i-1] for i in range(1, 3)):
-            add("core_operating_margin", "NEGATIVE", "HIGH",
-                f"Core operating margin deteriorated for 3 consecutive years: {margin_values[0]:.1%} → {margin_values[1]:.1%} → {margin_values[2]:.1%}.")
-
     # ── FCF Conversion ────────────────────────────────────────────────────────
     if m22 and m22["fcf_conversion"] is not None:
         fcf_conv = m22["fcf_conversion"]
@@ -447,19 +429,6 @@ def generate_signals(metrics, normalized):
         else:
             add("net_debt_to_ebitda", "POSITIVE", "LOW",
                 f"Net Debt/EBITDA of {nd_ebitda:.1f}x in 2022 is conservative.")
-
-    # ── Interest Coverage ─────────────────────────────────────────────────────
-    if m22 and m22["interest_coverage"] is not None:
-        ic = m22["interest_coverage"]
-        if ic < 2.0:
-            add("interest_coverage", "NEGATIVE", "HIGH",
-                f"Interest coverage of {ic:.1f}x in 2022 is dangerously low. Core operating income barely covers interest obligations.")
-        elif ic < 4.0:
-            add("interest_coverage", "WATCH", "MEDIUM",
-                f"Interest coverage of {ic:.1f}x in 2022 is adequate but thin. Margin compression could create stress.")
-        else:
-            add("interest_coverage", "POSITIVE", "LOW",
-                f"Interest coverage of {ic:.1f}x in 2022 is healthy.")
 
     # ── Shareholder Return vs FCF ─────────────────────────────────────────────
     if m22 and m22["cash_returned_vs_fcf"] is not None:
