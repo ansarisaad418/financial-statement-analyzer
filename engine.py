@@ -1,3 +1,6 @@
+
+Copy
+
 """
 Financial Statement Analyzer — Engine
 Company: Dow Inc.
@@ -138,8 +141,8 @@ def normalize(income, balance, cashflow):
         net_income       = get(income, "Net income", year)
         net_income_dow   = get(income, "Net income available for Dow Inc. common stockholders", year)
  
-        # ── Balance Sheet (2018 2019 2020 2021 2022) ───────────────────────────────
-        if year in [2022, 2021, 2020, 2019, 2018]:
+        # ── Balance Sheet (all detected years) ────────────────────────────────
+        if year in YEARS:
             cash              = get(balance, "Cash and cash equivalents", year)
             trade_receivables = get(balance, "Trade (net of allowance for doubtful receivables - 2022: $110; 2021: $54)", year)
             other_receivables = get(balance, "Other", year)
@@ -160,7 +163,7 @@ def normalize(income, balance, cashflow):
             dow_equity = get(balance, "Dow Inc.\u2019s stockholders\u2019 equity", year)
             retained_earnings = get(balance, "Retained earnings", year)
         else:
-            # 2020 balance sheet not available
+            # year not present in balance sheet
             cash = trade_receivables = other_receivables = inventories = None
             other_current = total_current_assets = net_property = goodwill = None
             total_assets = total_current_liabilities = long_term_debt = None
