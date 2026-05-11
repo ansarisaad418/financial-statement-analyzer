@@ -1,6 +1,4 @@
 
-Copy
-
 """
 Financial Statement Analyzer — Engine
 Company: Dow Inc.
