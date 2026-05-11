@@ -1,5 +1,5 @@
 """
-Financial Statement Analyzer - Engine
+Financial Statement Analyzer — Engine
 Company: Dow Inc.
 Data:2019, 2020, 2021, 2022 (from 2023 10-K)
  
@@ -398,23 +398,29 @@ def generate_signals(metrics, normalized):
             "finding": finding
         })
  
-    m22, m21, m20 = metrics.get(2022), metrics.get(2021), metrics.get(2020)
+    latest, prior = YEARS[0], YEARS[1]
+    m_latest = metrics.get(latest)
+    m_prior  = metrics.get(prior)
+    m_prev   = metrics.get(YEARS[2]) if len(YEARS) > 2 else None
+ 
+    # legacy aliases so existing signal code below stays readable
+    m22, m21, m20 = m_latest, m_prior, m_prev
  
     # ── FCF Conversion ────────────────────────────────────────────────────────
-    if m22 and m22["fcf_conversion"] is not None:
-        fcf_conv = m22["fcf_conversion"]
+    if m_latest and m_latest["fcf_conversion"] is not None:
+        fcf_conv = m_latest["fcf_conversion"]
         if fcf_conv < 0.75:
             add("fcf_conversion", "NEGATIVE", "HIGH",
-                f"FCF conversion in 2022 is {fcf_conv:.1%} — below the 75% threshold. Earnings quality is weak; cash generation is not keeping pace with reported profit.")
+                f"FCF conversion in {latest} is {fcf_conv:.1%} — below the 75% threshold. Earnings quality is weak; cash generation is not keeping pace with reported profit.")
         elif fcf_conv >= 0.75 and fcf_conv < 1.0:
             add("fcf_conversion", "WATCH", "LOW",
-                f"FCF conversion in 2022 is {fcf_conv:.1%}. Acceptable but below 1x — some earnings are not converting to cash.")
+                f"FCF conversion in {latest} is {fcf_conv:.1%}. Acceptable but below 1x — some earnings are not converting to cash.")
         else:
             add("fcf_conversion", "POSITIVE", "LOW",
-                f"FCF conversion in 2022 is {fcf_conv:.1%} — above 1x, indicating strong earnings quality.")
+                f"FCF conversion in {latest} is {fcf_conv:.1%} — above 1x, indicating strong earnings quality.")
  
     # ── Non-Core Income Dependency ────────────────────────────────────────────
-    for year, m in [(2022, m22), (2021, m21), (2020, m20)]:
+    for year, m in [(y, metrics.get(y)) for y in YEARS[:3]]:
         if m and m["non_core_as_pct_ebt"] is not None:
             pct = m["non_core_as_pct_ebt"]
             if abs(pct) > 0.20:
@@ -422,30 +428,30 @@ def generate_signals(metrics, normalized):
                     f"In {year}, non-core items (equity earnings + sundry) represented {pct:.1%} of pre-tax income. Reported earnings are sensitive to volatile, non-operational items.")
  
     # ── Leverage ──────────────────────────────────────────────────────────────
-    if m22 and m22["net_debt_to_ebitda"] is not None:
-        nd_ebitda = m22["net_debt_to_ebitda"]
+    if m_latest and m_latest["net_debt_to_ebitda"] is not None:
+        nd_ebitda = m_latest["net_debt_to_ebitda"]
         if nd_ebitda > 3.0:
             add("net_debt_to_ebitda", "NEGATIVE", "HIGH",
-                f"Net Debt/EBITDA of {nd_ebitda:.1f}x in 2022 is elevated. Leverage above 3x raises refinancing and covenant risk.")
+                f"Net Debt/EBITDA of {nd_ebitda:.1f}x in {latest} is elevated. Leverage above 3x raises refinancing and covenant risk.")
         elif nd_ebitda > 2.0:
             add("net_debt_to_ebitda", "WATCH", "MEDIUM",
-                f"Net Debt/EBITDA of {nd_ebitda:.1f}x in 2022 is moderate. Manageable but leaves limited headroom in a downturn.")
+                f"Net Debt/EBITDA of {nd_ebitda:.1f}x in {latest} is moderate. Manageable but leaves limited headroom in a downturn.")
         else:
             add("net_debt_to_ebitda", "POSITIVE", "LOW",
-                f"Net Debt/EBITDA of {nd_ebitda:.1f}x in 2022 is conservative.")
+                f"Net Debt/EBITDA of {nd_ebitda:.1f}x in {latest} is conservative.")
  
     # ── Shareholder Return vs FCF ─────────────────────────────────────────────
-    if m22 and m22["cash_returned_vs_fcf"] is not None:
-        cr_fcf = m22["cash_returned_vs_fcf"]
+    if m_latest and m_latest["cash_returned_vs_fcf"] is not None:
+        cr_fcf = m_latest["cash_returned_vs_fcf"]
         if cr_fcf > 1.0:
             add("capital_allocation", "NEGATIVE", "HIGH",
-                f"In 2022, Dow returned {cr_fcf:.1%} of FCF to shareholders (dividends + buybacks). Returning more cash than generated — funded by debt or asset sales.")
+                f"In {latest}, Dow returned {cr_fcf:.1%} of FCF to shareholders (dividends + buybacks). Returning more cash than generated — funded by debt or asset sales.")
         elif cr_fcf > 0.75:
             add("capital_allocation", "WATCH", "MEDIUM",
-                f"In 2022, Dow returned {cr_fcf:.1%} of FCF to shareholders. Aggressive but sustainable if FCF holds.")
+                f"In {latest}, Dow returned {cr_fcf:.1%} of FCF to shareholders. Aggressive but sustainable if FCF holds.")
         else:
             add("capital_allocation", "POSITIVE", "LOW",
-                f"In 2022, Dow returned {cr_fcf:.1%} of FCF to shareholders — retaining capital for reinvestment.")
+                f"In {latest}, Dow returned {cr_fcf:.1%} of FCF to shareholders — retaining capital for reinvestment.")
  
     # ── Restructuring Recurrence ──────────────────────────────────────────────
     restructuring_years = []
@@ -458,36 +464,33 @@ def generate_signals(metrics, normalized):
             f"Restructuring charges appear in {len(restructuring_years)} out of {len(YEARS)} years ({', '.join(str(y) for y in sorted(restructuring_years, reverse=True))}). Recurring 'non-recurring' charges are an earnings quality red flag.")
  
     # ── Liquidity ─────────────────────────────────────────────────────────────
-    if m22 and m22["current_ratio"] is not None:
-        cr = m22["current_ratio"]
+    if m_latest and m_latest["current_ratio"] is not None:
+        cr = m_latest["current_ratio"]
         if cr < 1.0:
             add("current_ratio", "NEGATIVE", "HIGH",
-                f"Current ratio of {cr:.2f}x in 2022 — current liabilities exceed current assets. Short-term liquidity risk.")
+                f"Current ratio of {cr:.2f}x in {latest} — current liabilities exceed current assets. Short-term liquidity risk.")
         elif cr < 1.5:
             add("current_ratio", "WATCH", "LOW",
-                f"Current ratio of {cr:.2f}x in 2022 is adequate but lean.")
+                f"Current ratio of {cr:.2f}x in {latest} is adequate but lean.")
         else:
             add("current_ratio", "POSITIVE", "LOW",
-                f"Current ratio of {cr:.2f}x in 2022 is comfortable.")
+                f"Current ratio of {cr:.2f}x in {latest} is comfortable.")
  
  
-    # ── COMPOSITION SIGNAL 1: Operating Leverage ─────────────────────────────
-    # If revenue grows but operating income grows slower → cost pressure
-    n20 = normalized.get(2020, {})
-    n21 = normalized.get(2021, {})
-    n22 = normalized.get(2022, {})
+    n_latest = normalized.get(latest, {})
+    n_prior  = normalized.get(prior, {})
+    n_prev   = normalized.get(YEARS[2], {}) if len(YEARS) > 2 else {}
  
-    rev20, rev21, rev22 = n20.get("revenue"), n21.get("revenue"), n22.get("revenue")
-    oi20 = m20["core_operating_income"] if m20 else None
-    oi21 = m21["core_operating_income"] if m21 else None
-    oi22 = m22["core_operating_income"] if m22 else None
+    rev_prior,  rev_latest  = n_prior.get("revenue"),  n_latest.get("revenue")
+    oi_prior  = m_prior["core_operating_income"]  if m_prior  else None
+    oi_latest = m_latest["core_operating_income"] if m_latest else None
  
-    if all(v is not None for v in [rev21, rev22, oi21, oi22]) and rev21 != 0 and oi21 != 0:
-        rev_growth = (rev22 - rev21) / abs(rev21)
-        oi_growth  = (oi22 - oi21) / abs(oi21)
+    if all(v is not None for v in [rev_prior, rev_latest, oi_prior, oi_latest]) and rev_prior != 0 and oi_prior != 0:
+        rev_growth = (rev_latest - rev_prior) / abs(rev_prior)
+        oi_growth  = (oi_latest - oi_prior)  / abs(oi_prior)
         if rev_growth > 0 and oi_growth < rev_growth * 0.5:
             add("operating_leverage", "NEGATIVE", "HIGH",
-                f"Revenue grew {rev_growth:.1%} from 2021 to 2022 but core operating income declined {oi_growth:.1%}. "
+                f"Revenue grew {rev_growth:.1%} from {prior} to {latest} but core operating income declined {oi_growth:.1%}. "
                 f"Costs are growing faster than revenue — negative operating leverage.")
         elif rev_growth > 0 and oi_growth > rev_growth:
             add("operating_leverage", "POSITIVE", "LOW",
@@ -495,61 +498,58 @@ def generate_signals(metrics, normalized):
                 f"Positive operating leverage: the business is scaling efficiently.")
         elif rev_growth > 0 and oi_growth < 0:
             add("operating_leverage", "NEGATIVE", "HIGH",
-                f"Revenue grew {rev_growth:.1%} from 2021 to 2022 but core operating income contracted {abs(oi_growth):.1%}. "
+                f"Revenue grew {rev_growth:.1%} from {prior} to {latest} but core operating income contracted {abs(oi_growth):.1%}. "
                 f"Margin compression is absorbing all top-line growth.")
  
     # ── COMPOSITION SIGNAL 2: Margin Driver Decomposition ────────────────────
     # Gross margin stable but operating margin falling → SG&A/overhead problem
-    if m21 and m22:
-        gm21 = m21.get("gross_margin")
-        gm22 = m22.get("gross_margin")
-        om21 = m21.get("core_operating_margin")
-        om22 = m22.get("core_operating_margin")
+    if m_prior and m_latest:
+        gm_prior  = m_prior.get("gross_margin")
+        gm_latest = m_latest.get("gross_margin")
+        om_prior  = m_prior.get("core_operating_margin")
+        om_latest = m_latest.get("core_operating_margin")
  
-        if all(v is not None for v in [gm21, gm22, om21, om22]):
-            gm_change = gm22 - gm21
-            om_change = om22 - om21
+        if all(v is not None for v in [gm_prior, gm_latest, om_prior, om_latest]):
+            gm_change = gm_latest - gm_prior
+            om_change = om_latest - om_prior
  
             if abs(gm_change) < 0.01 and om_change < -0.02:
                 add("margin_driver", "NEGATIVE", "MEDIUM",
-                    f"Gross margin held relatively stable ({gm21:.1%} → {gm22:.1%}) while core operating margin "
-                    f"fell from {om21:.1%} to {om22:.1%}. The margin pressure originates below the gross profit line — "
+                    f"Gross margin held relatively stable ({gm_prior:.1%} → {gm_latest:.1%}) while core operating margin "
+                    f"fell from {om_prior:.1%} to {om_latest:.1%}. The margin pressure originates below the gross profit line — "
                     f"likely SG&A or overhead cost inflation, not raw material or production cost.")
             elif gm_change < -0.02 and om_change < -0.02:
                 add("margin_driver", "NEGATIVE", "HIGH",
-                    f"Both gross margin ({gm21:.1%} → {gm22:.1%}) and core operating margin ({om21:.1%} → {om22:.1%}) "
+                    f"Both gross margin ({gm_prior:.1%} → {gm_latest:.1%}) and core operating margin ({om_prior:.1%} → {om_latest:.1%}) "
                     f"deteriorated. Margin pressure is broad-based — affecting both production costs and operating expenses.")
             elif gm_change < -0.02 and abs(om_change) < 0.01:
                 add("margin_driver", "POSITIVE", "LOW",
-                    f"Gross margin declined ({gm21:.1%} → {gm22:.1%}) but operating margin held stable ({om21:.1%} → {om22:.1%}). "
+                    f"Gross margin declined ({gm_prior:.1%} → {gm_latest:.1%}) but operating margin held stable ({om_prior:.1%} → {om_latest:.1%}). "
                     f"Management absorbed input cost pressure through SG&A discipline.")
  
     # ── COMPOSITION SIGNAL 3: Leverage + Coverage Interaction ────────────────
     # Rising debt AND falling coverage = compounded risk
-    if m21 and m22:
-        nd21 = m21.get("net_debt_to_ebitda")
-        nd22 = m22.get("net_debt_to_ebitda")
-        ic21 = m21.get("interest_coverage")
-        ic22 = m22.get("interest_coverage")
+    if m_prior and m_latest:
+        nd_prior  = m_prior.get("net_debt_to_ebitda")
+        nd_latest = m_latest.get("net_debt_to_ebitda")
+        ic_prior  = m_prior.get("interest_coverage")
+        ic_latest = m_latest.get("interest_coverage")
  
-        if all(v is not None for v in [nd21, nd22, ic21, ic22]):
-            leverage_rising  = nd22 > nd21 * 1.05
-            coverage_falling = ic22 < ic21 * 0.95
+        if all(v is not None for v in [nd_prior, nd_latest, ic_prior, ic_latest]):
+            leverage_rising  = nd_latest > nd_prior * 1.05
+            coverage_falling = ic_latest < ic_prior * 0.95
  
             if leverage_rising and coverage_falling:
                 add("leverage_coverage_interaction", "NEGATIVE", "HIGH",
-                    f"Net Debt/EBITDA rose from {nd21:.1f}x to {nd22:.1f}x while interest coverage fell from "
-                    f"{ic21:.1f}x to {ic22:.1f}x. Rising leverage combined with declining coverage is a compounded "
+                    f"Net Debt/EBITDA rose from {nd_prior:.1f}x to {nd_latest:.1f}x while interest coverage fell from "
+                    f"{ic_prior:.1f}x to {ic_latest:.1f}x. Rising leverage combined with declining coverage is a compounded "
                     f"credit risk signal — the company is taking on more debt while its ability to service it weakens.")
             elif not leverage_rising and not coverage_falling:
                 add("leverage_coverage_interaction", "POSITIVE", "LOW",
-                    f"Net Debt/EBITDA moved from {nd21:.1f}x to {nd22:.1f}x and interest coverage from {ic21:.1f}x "
-                    f"to {ic22:.1f}x. Leverage and coverage are moving in a constructive direction.")
-    # ── Pull all 5 years ──────────────────────────────────────────────────────
-    m18 = metrics.get(2018)
-    m19 = metrics.get(2019)
-    all_years = [2018, 2019, 2020, 2021, 2022]
-    all_m = {2018: m18, 2019: m19, 2020: m20, 2021: m21, 2022: m22}
+                    f"Net Debt/EBITDA moved from {nd_prior:.1f}x to {nd_latest:.1f}x and interest coverage from {ic_prior:.1f}x "
+                    f"to {ic_latest:.1f}x. Leverage and coverage are moving in a constructive direction.")
+    all_years = list(reversed(YEARS))  # oldest → newest for trend loops
+    all_m = {y: metrics.get(y) for y in all_years}
  
     # ── 5-Year Margin Trend (replaces 3-year) ─────────────────────────────────
     margin_5yr = [(y, all_m[y]["core_operating_margin"])
@@ -759,9 +759,12 @@ def build_output(normalized, metrics, signals):
 # ── Upgraded Trend Engine ─────────────────────────────────────────────────
     def analyze_trend(metric_name):
         """Generates a rich trend dictionary: direction, yoy_change, magnitude, consistency."""
-        v20 = metrics.get(2020, {}).get(metric_name)
-        v21 = metrics.get(2021, {}).get(metric_name)
-        v22 = metrics.get(2022, {}).get(metric_name)
+        v_latest = metrics.get(YEARS[0], {}).get(metric_name)
+        v_prior  = metrics.get(YEARS[1], {}).get(metric_name) if len(YEARS) > 1 else None
+        v_prev   = metrics.get(YEARS[2], {}).get(metric_name) if len(YEARS) > 2 else None
+ 
+        # map to readable names for logic below
+        v22, v21, v20 = v_latest, v_prior, v_prev
  
         if v21 is None or v22 is None:
             return {"direction": "insufficient_data", "yoy_change": None, "magnitude": None, "consistency": None}
