@@ -1,4 +1,3 @@
-
 """
 Financial Statement Analyzer — Engine
 Company: Dow Inc.
@@ -687,8 +686,8 @@ def generate_signals(metrics, normalized):
             latest_yr  = fcf_yrs[-1]
             if latest_val < peak_val * 0.75:
                 add("fcf_trend", "WATCH", "MEDIUM",
-                    f"Free cash flow peaked at ${peak_val:,.0f}M in {peak_yr} and has since fallen to "
-                    f"${latest_val:,.0f}M in {latest_yr} — a {((latest_val-peak_val)/abs(peak_val)):.1%} decline from peak. "
+                    f"Free cash flow peaked at \\${peak_val:,.0f}M in {peak_yr} and has since fallen to "
+                    f"\\${latest_val:,.0f}M in {latest_yr} — a {((latest_val-peak_val)/abs(peak_val)):.1%} decline from peak. "
                     f"FCF volatility warrants monitoring.")
  
     # ── Leverage Trend — Volatile / Peak Pattern ──────────────────────────────
@@ -708,9 +707,9 @@ def generate_signals(metrics, normalized):
         if swing >= 1.0 and latest_nd > trough_nd * 1.2:
             add("leverage_trend", "WATCH", "MEDIUM",
                 f"Net Debt/EBITDA has been volatile over the period: "
-                f"trough of {trough_nd:.1f}x in {trough_nd_yr}, peak of {peak_nd:.1f}x in {peak_nd_yr} "
-                f"(elevated by spin-off transition costs), currently {latest_nd:.1f}x in {latest_nd_yr}. "
-                f"Excluding the 2019 spike, leverage has been on a structural improvement path.")
+                f"trough of {trough_nd:.1f}x in {trough_nd_yr}, peak of {peak_nd:.1f}x in {peak_nd_yr}, "
+                f"currently {latest_nd:.1f}x in {latest_nd_yr}. "
+                f"Wide swing of {swing:.1f}x warrants monitoring.")
         elif swing < 0.5:
             add("leverage_trend", "POSITIVE", "LOW",
                 f"Net Debt/EBITDA has remained stable across the full period "
@@ -727,25 +726,27 @@ def generate_signals(metrics, normalized):
             div_5yr.append((y, abs(div), fcf_val, abs(div) / fcf_val))
  
     if len(div_5yr) >= 3:
-        ratios     = [r for _, _, _, r in div_5yr]
-        div_yrs    = [y for y, _, _, _ in div_5yr]
-        avg_ratio  = sum(ratios) / len(ratios)
-        latest_ratio = ratios[-1]
+        ratios        = [r for _, _, _, r in div_5yr]
+        div_yrs       = [y for y, _, _, _ in div_5yr]
+        avg_ratio     = sum(ratios) / len(ratios)
+        latest_ratio  = ratios[-1]
         latest_div_yr = div_yrs[-1]
+        excluded      = [y for y in all_years if y not in div_yrs]
+        excl_note     = f" (excludes {', '.join(str(y) for y in excluded)} — negative FCF)" if excluded else ""
         if avg_ratio > 0.75:
             add("dividend_sustainability", "NEGATIVE", "HIGH",
-                f"Dividends have consumed an average of {avg_ratio:.1%} of FCF over {len(div_5yr)} years "
-                f"({div_yrs[0]}–{div_yrs[-1]}). Sustained high payout leaves minimal buffer — "
+                f"Dividends have consumed an average of {avg_ratio:.1%} of FCF over {len(div_5yr)} FCF-positive years "
+                f"({div_yrs[0]}–{div_yrs[-1]}){excl_note}. Sustained high payout leaves minimal buffer — "
                 f"any FCF compression would put the dividend at risk.")
         elif avg_ratio > 0.50:
             add("dividend_sustainability", "WATCH", "MEDIUM",
-                f"Dividends have averaged {avg_ratio:.1%} of FCF over {len(div_5yr)} years "
-                f"({div_yrs[0]}–{div_yrs[-1]}). Manageable but leaves limited reinvestment capacity. "
-                f"Latest year payout ratio: {latest_ratio:.1%} in {latest_div_yr}.")
+                f"Dividends have averaged {avg_ratio:.1%} of FCF over {len(div_5yr)} FCF-positive years "
+                f"({div_yrs[0]}–{div_yrs[-1]}){excl_note}. Manageable but leaves limited reinvestment capacity. "
+                f"Latest FCF-positive year payout ratio: {latest_ratio:.1%} in {latest_div_yr}.")
         else:
             add("dividend_sustainability", "POSITIVE", "LOW",
-                f"Dividends have averaged {avg_ratio:.1%} of FCF over {len(div_5yr)} years "
-                f"({div_yrs[0]}–{div_yrs[-1]}). Dividend is well-covered with room for reinvestment.")
+                f"Dividends have averaged {avg_ratio:.1%} of FCF over {len(div_5yr)} FCF-positive years "
+                f"({div_yrs[0]}–{div_yrs[-1]}){excl_note}. Dividend is well-covered with room for reinvestment.")
     return signals
  
  
