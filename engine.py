@@ -2,7 +2,7 @@
 Copy
 
 """
-Financial Statement Analyzer — Engine
+Financial Statement Analyzer - Engine
 Company: Dow Inc.
 Data:2019, 2020, 2021, 2022 (from 2023 10-K)
  
