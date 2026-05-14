@@ -171,9 +171,12 @@ def normalize(income, balance, cashflow):
                          "Selling General Administrative",
                          "Selling General And Administration",
                          "General And Administrative Expense")
-        # amortization defaults to 0 so core_operating_income = Revenue-COGS-R&D-SGA
-        # EBITDA = core_operating_income + CF D&A (correct)
-        amortization    = _yf(income, year, "Reconciled Depreciation") or 0
+        # amortization set to 0 so core_operating_income = Revenue-COGS-R&D-SGA (≈ EBIT)
+        # EBITDA = core_operating_income + CF D&A adds back the full cash D&A figure
+        # Do NOT use "Reconciled Depreciation" from the income stmt — for large tech companies
+        # (e.g. Microsoft) it can include SBC or capitalized amortization that inflates the
+        # subtracted figure, causing EBITDA to collapse to near operating-income margin.
+        amortization    = 0
         restructuring   = None   # not a standard yfinance field
         integration     = None   # not a standard yfinance field
 
