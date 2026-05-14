@@ -1,6 +1,7 @@
-pandas
-openpyxl
 streamlit
+pandas
 plotly
-google-genai
+yfinance
 requests
+google-genai
+openpyxl

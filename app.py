@@ -124,19 +124,15 @@ if st.session_state.output is None:
 
     # ── Name Search ───────────────────────────────────────────────────────────
     if search_btn and query:
-        if not fmp_key:
-            st.error("Please enter your FMP API key in the sidebar.")
-        else:
-            with st.spinner("Searching..."):
-                try:
-                    eng.FMP_API_KEY = fmp_key
-                    results = search_company(query)
-                    if results:
-                        st.session_state.search_results = results
-                    else:
-                        st.warning("No companies found. Try a different name or use the ticker directly.")
-                except Exception as e:
-                    st.error(f"Search error: {e}")
+        with st.spinner("Searching..."):
+            try:
+                results = search_company(query)
+                if results:
+                    st.session_state.search_results = results
+                else:
+                    st.warning("No companies found. Try a different name or use the ticker directly.")
+            except Exception as e:
+                st.error(f"Search error: {e}")
 
     # ── Show Search Results ───────────────────────────────────────────────────
     if st.session_state.search_results:
@@ -149,44 +145,38 @@ if st.session_state.output is None:
         chosen_label = st.radio("", list(options.keys()), key="company_radio")
         chosen_ticker = options[chosen_label]
 
-        if st.button("✅ Analyze This Company", type="primary", use_container_width=True):
+        if st.button("\u2705 Analyze This Company", type="primary", use_container_width=True):
             st.session_state.search_results = None
             st.session_state.selected_ticker = chosen_ticker
             st.rerun()
 
     # ── Direct Ticker / CIK Analysis ─────────────────────────────────────────
-    run_analysis = direct_btn or (st.session_state.selected_ticker is not None)
+    run_analysis  = direct_btn or (st.session_state.selected_ticker is not None)
     ticker_to_use = st.session_state.selected_ticker or (query.strip() if direct_btn else None)
 
     if run_analysis and ticker_to_use:
-        if not fmp_key:
-            st.error("Please enter your FMP API key in the sidebar.")
-        else:
-            with st.spinner(f"Fetching data and running analysis..."):
-                try:
-                    eng.FMP_API_KEY = fmp_key
+        with st.spinner(f"Fetching data and running analysis..."):
+            try:
+                if ticker_to_use.isdigit():
+                    resolved_ticker, resolved_name = resolve_cik(ticker_to_use)
+                    if not resolved_ticker:
+                        st.error(f"Could not resolve CIK {ticker_to_use} to a ticker. Check the number.")
+                        st.stop()
+                    ticker_to_use = resolved_ticker
 
-                    # CIK resolution
-                    if ticker_to_use.isdigit():
-                        resolved_ticker, resolved_name = resolve_cik(ticker_to_use)
-                        if not resolved_ticker:
-                            st.error(f"Could not resolve CIK {ticker_to_use} to a ticker. Check the number.")
-                            st.stop()
-                        ticker_to_use = resolved_ticker
+                income, balance, cashflow = load_all_statements(ticker_to_use)
+                normalized = normalize(income, balance, cashflow)
+                metrics    = calculate_metrics(normalized)
+                signals    = generate_signals(metrics, normalized)
+                output     = build_output(normalized, metrics, signals)
 
-                    income, balance, cashflow = load_all_statements(ticker_to_use)
-                    normalized = normalize(income, balance, cashflow)
-                    metrics    = calculate_metrics(normalized)
-                    signals    = generate_signals(metrics, normalized)
-                    output     = build_output(normalized, metrics, signals)
+                st.session_state.output = output
+                st.session_state.selected_ticker = None
+                st.rerun()
 
-                    st.session_state.output = output
-                    st.session_state.selected_ticker = None
-                    st.rerun()
-
-                except Exception as e:
-                    st.error(f"❌ Analysis error: {e}")
-                    st.session_state.selected_ticker = None
+            except Exception as e:
+                st.error(f"\u274c Analysis error: {e}")
+                st.session_state.selected_ticker = None
 
 # ── DASHBOARD ─────────────────────────────────────────────────────────────────
 

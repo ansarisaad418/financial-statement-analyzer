@@ -2,201 +2,244 @@
 Financial Statement Analyzer — Engine
 
 Pipeline:
-  1. Fetch data from Financial Modeling Prep (FMP) API by ticker
-  2. Normalize (map FMP standard fields → internal names)
+  1. Fetch data from yfinance (Yahoo Finance) by ticker
+  2. Normalize (map yfinance row labels -> internal names)
   3. Calculate metrics (margins, liquidity, leverage, efficiency, cash quality)
   4. Generate signals (rule-based flags)
-  5. Output structured JSON → ready for AI interpretation
+  5. Output structured JSON -> ready for AI interpretation
 """
 
 import json
 import math
 import requests
+import yfinance as yf
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 
 YEARS        = []   # auto-populated by load_all_statements()
-FMP_API_KEY  = ""   # set from Streamlit secrets or sidebar
 COMPANY_NAME = ""   # set when data is loaded
 TICKER       = ""   # set when data is loaded
 
-# ── STEP 1: LOAD RAW DATA FROM FMP ───────────────────────────────────────────
-
-def _fmp_get(endpoint, params=None):
-    """Low-level FMP GET helper. Raises on HTTP or API errors."""
-    base = "https://financialmodelingprep.com/api/v3"
-    p = {"apikey": FMP_API_KEY}
-    if params:
-        p.update(params)
-    r = requests.get(f"{base}/{endpoint}", params=p, timeout=15)
-    r.raise_for_status()
-    data = r.json()
-    if isinstance(data, dict) and data.get("Error Message"):
-        raise ValueError(data["Error Message"])
-    return data
-
+# ── STEP 1: LOAD RAW DATA FROM YFINANCE ──────────────────────────────────────
 
 def search_company(query):
     """
-    Search FMP by company name or ticker symbol.
-    Returns a list: [{symbol, name, exchange, ...}, ...]
+    Search for companies by name or ticker using yfinance.
+    Returns a list: [{symbol, name, exchangeShortName}, ...]
     """
-    return _fmp_get("search", {"query": query, "limit": 10})
+    try:
+        results = yf.Search(query, max_results=10)
+        quotes = results.quotes
+        return [
+            {
+                "symbol": q.get("symbol", ""),
+                "name": q.get("longName") or q.get("shortName", ""),
+                "exchangeShortName": q.get("exchDisp", ""),
+            }
+            for q in quotes
+            if q.get("quoteType") in ("EQUITY", "ETF")
+        ]
+    except Exception:
+        return [{"symbol": query.upper(), "name": query.upper(), "exchangeShortName": ""}]
 
 
 def resolve_cik(cik):
     """
-    Resolve a CIK number to a ticker via FMP.
+    Resolve a CIK number to a ticker via SEC EDGAR (free, no auth required).
     Returns (ticker, company_name) or (None, None) if not found.
     """
-    data = _fmp_get(f"cik/{str(cik).zfill(10)}")
-    if data and isinstance(data, list) and len(data) > 0:
-        return data[0].get("symbol"), data[0].get("companyName")
+    try:
+        cik_str = str(cik).zfill(10)
+        r = requests.get(
+            f"https://data.sec.gov/submissions/CIK{cik_str}.json",
+            headers={"User-Agent": "FinancialAnalyzer saadansari.wk2@gmail.com"},
+            timeout=10
+        )
+        r.raise_for_status()
+        data = r.json()
+        tickers = data.get("tickers", [])
+        name = data.get("name", str(cik))
+        if tickers:
+            return tickers[0], name
+    except Exception:
+        pass
     return None, None
 
 
 def load_all_statements(ticker):
     """
-    Fetches annual income statement, balance sheet, and cash flow from FMP.
+    Fetches annual income statement, balance sheet, and cash flow via yfinance.
 
-    Returns three dicts in format {fmp_field: {year: value_in_millions}}.
+    Returns three dicts in format {row_label: {year: value_in_millions}}.
     Sets globals: YEARS, TICKER, COMPANY_NAME.
 
-    FMP returns full dollar amounts (not millions). All monetary values are
-    divided by 1,000,000 so the rest of the pipeline works in USD millions.
+    yfinance returns full dollar amounts. All monetary values are divided
+    by 1,000,000 so the rest of the pipeline works in USD millions.
     """
     global YEARS, TICKER, COMPANY_NAME
 
     TICKER = ticker.strip().upper()
+    t = yf.Ticker(TICKER)
 
-    income_raw   = _fmp_get(f"income-statement/{TICKER}",        {"period": "annual", "limit": 10})
-    balance_raw  = _fmp_get(f"balance-sheet-statement/{TICKER}", {"period": "annual", "limit": 10})
-    cashflow_raw = _fmp_get(f"cash-flow-statement/{TICKER}",     {"period": "annual", "limit": 10})
-
-    if not income_raw:
-        raise ValueError(f"No data returned for '{TICKER}'. Check the ticker symbol and try again.")
-
-    # Resolve human-readable company name from FMP profile
     try:
-        profile = _fmp_get(f"profile/{TICKER}")
-        COMPANY_NAME = profile[0].get("companyName", TICKER) if profile else TICKER
+        info = t.info
+        COMPANY_NAME = info.get("longName") or info.get("shortName") or TICKER
     except Exception:
         COMPANY_NAME = TICKER
 
-    # Fields that are ratios / metadata — do NOT divide by 1,000,000
-    _no_scale = {
-        "date", "symbol", "reportedCurrency", "cik", "fillingDate",
-        "acceptedDate", "calendarYear", "period", "link", "finalLink",
-        "grossProfitRatio", "ebitdaratio", "operatingIncomeRatio",
-        "incomeBeforeTaxRatio", "netIncomeRatio", "eps", "epsdiluted",
-        "weightedAverageShsOut", "weightedAverageShsOutDil",
-    }
+    income_df   = t.financials    # Income Statement: rows=metrics, cols=dates
+    balance_df  = t.balance_sheet  # Balance Sheet
+    cashflow_df = t.cashflow       # Cash Flow Statement
 
-    def to_year_dict(records):
-        """Convert FMP list-of-annual-records → {field: {year: value}}."""
+    if income_df is None or income_df.empty:
+        raise ValueError(
+            f"No financial data found for ticker '{TICKER}'. "
+            "Check the symbol and try again."
+        )
+
+    def df_to_dict(df):
+        """Convert yfinance DataFrame to {row_label: {year: value_in_millions}}."""
         result = {}
-        for record in records:
-            year = int(record.get("calendarYear", 0))
-            if year == 0:
-                continue
-            for field, val in record.items():
-                if field in _no_scale:
-                    continue
-                if field not in result:
-                    result[field] = {}
-                if isinstance(val, (int, float)) and val == val:
-                    result[field][year] = round(val / 1_000_000, 3)
-                else:
-                    result[field][year] = None
+        if df is None or df.empty:
+            return result
+        for field in df.index:
+            result[str(field)] = {}
+            for col in df.columns:
+                year = col.year
+                try:
+                    v = float(df.loc[field, col])
+                    result[str(field)][year] = round(v / 1_000_000, 3) if not math.isnan(v) else None
+                except (TypeError, ValueError):
+                    result[str(field)][year] = None
         return result
 
-    income   = to_year_dict(income_raw)
-    balance  = to_year_dict(balance_raw)
-    cashflow = to_year_dict(cashflow_raw)
+    income   = df_to_dict(income_df)
+    balance  = df_to_dict(balance_df)
+    cashflow = df_to_dict(cashflow_df)
 
-    # YEARS: sorted newest → oldest, driven by income statement
-    YEARS = sorted(income.get("revenue", {}).keys(), reverse=True)
+    YEARS = sorted(income.get("Total Revenue", {}).keys(), reverse=True)
+
+    if not YEARS:
+        raise ValueError(f"No annual data returned for '{TICKER}'.")
 
     return income, balance, cashflow
 
 
+
 # ── STEP 2: NORMALIZE ─────────────────────────────────────────────────────────
 
-def get(data, field, year):
-    """Safe lookup — returns None if field or year missing."""
-    return data.get(field, {}).get(year, None)
+def _yf(data, year, *labels):
+    """
+    Safe yfinance lookup — tries each label in order, returns first non-None.
+    data is {row_label: {year: value_in_millions}}
+    """
+    for label in labels:
+        val = data.get(label, {}).get(year)
+        if val is not None:
+            return val
+    return None
 
 
 def normalize(income, balance, cashflow):
     """
-    Maps FMP standard field names to the engine's internal names.
-    All monetary values are already in USD millions (converted in load_all_statements).
+    Maps yfinance row labels to the engine's internal field names.
+    All values already in USD millions (converted in load_all_statements).
     Returns {year: {metric: value}}
 
-    FMP field reference:
-      Income:   revenue, costOfRevenue, researchAndDevelopmentExpenses,
-                sellingGeneralAndAdministrativeExpenses, depreciationAndAmortization,
-                interestIncome, interestExpense, incomeBeforeTax, incomeTaxExpense,
-                netIncome, totalOtherIncomeExpensesNet
-      Balance:  cashAndCashEquivalents, netReceivables, inventory,
-                totalCurrentAssets, propertyPlantEquipmentNet, goodwill,
-                totalAssets, totalCurrentLiabilities, longTermDebt,
-                shortTermDebt, totalStockholdersEquity, retainedEarnings, totalEquity
-      CashFlow: operatingCashFlow, capitalExpenditure, depreciationAndAmortization,
-                dividendsPaid, commonStockRepurchased
+    yfinance label reference:
+      Income:   Total Revenue, Cost Of Revenue, Research And Development,
+                Selling General Administrative, Reconciled Depreciation,
+                Interest Expense, Interest Income, Pretax Income,
+                Tax Provision, Net Income
+      Balance:  Cash And Cash Equivalents, Accounts Receivable, Inventory,
+                Current Assets, Net PPE, Goodwill, Total Assets,
+                Current Liabilities, Long Term Debt, Current Debt,
+                Stockholders Equity, Retained Earnings, Total Equity
+      CashFlow: Operating Cash Flow, Capital Expenditure,
+                Depreciation And Amortization, Common Stock Dividend Paid,
+                Repurchase Of Capital Stock
     """
     normalized = {}
 
     for year in YEARS:
 
         # ── Income Statement ──────────────────────────────────────────────────
-        revenue          = get(income, "revenue", year)
-        cogs             = get(income, "costOfRevenue", year)
-        rd_expense       = get(income, "researchAndDevelopmentExpenses", year) or 0
-        sga              = get(income, "sellingGeneralAndAdministrativeExpenses", year)
-        # amortization: use IS D&A if broken out; default to 0 so core_operating_income
-        # computes as Revenue - COGS - R&D - SG&A (≈ EBIT), then EBITDA = EBIT + CF D&A
-        amortization     = get(income, "depreciationAndAmortization", year) or 0
-        restructuring    = None   # not a standard FMP field
-        integration      = None   # not a standard FMP field
+        revenue    = _yf(income, year, "Total Revenue")
+        cogs       = _yf(income, year, "Cost Of Revenue")
+        rd_expense = _yf(income, year, "Research And Development") or 0
+        sga        = _yf(income, year,
+                         "Selling General Administrative",
+                         "Selling General And Administration",
+                         "General And Administrative Expense")
+        # amortization defaults to 0 so core_operating_income = Revenue-COGS-R&D-SGA
+        # EBITDA = core_operating_income + CF D&A (correct)
+        amortization    = _yf(income, year, "Reconciled Depreciation") or 0
+        restructuring   = None   # not a standard yfinance field
+        integration     = None   # not a standard yfinance field
 
-        # Non-core items
-        equity_earnings  = None   # not separately reported by FMP
-        sundry_income    = get(income, "totalOtherIncomeExpensesNet", year)
+        equity_earnings = None   # not separately reported
+        sundry_income   = _yf(income, year, "Other Income Expense",
+                               "Total Other Finance Cost",
+                               "Other Non Operating Income Expenses")
 
-        interest_income  = get(income, "interestIncome", year)
-        interest_expense = get(income, "interestExpense", year)
-        ebt              = get(income, "incomeBeforeTax", year)
-        tax              = get(income, "incomeTaxExpense", year)
-        net_income       = get(income, "netIncome", year)
-        net_income_dow   = net_income   # FMP netIncome = attributable to common shareholders
+        # yfinance shows Interest Expense as negative — negate for engine
+        _ie_raw = _yf(income, year, "Interest Expense", "Interest Expense Non Operating")
+        interest_expense = abs(_ie_raw) if _ie_raw is not None else None
+        interest_income  = _yf(income, year, "Interest Income",
+                                "Interest Income Non Operating")
+        ebt        = _yf(income, year, "Pretax Income")
+        tax        = _yf(income, year, "Tax Provision")
+        net_income = _yf(income, year, "Net Income")
+        net_income_dow = net_income  # yfinance Net Income = attributable to common
 
         # ── Balance Sheet ─────────────────────────────────────────────────────
-        cash                      = get(balance, "cashAndCashEquivalents", year)
-        trade_receivables         = get(balance, "netReceivables", year)
-        inventories               = get(balance, "inventory", year)
-        total_current_assets      = get(balance, "totalCurrentAssets", year)
-        net_property              = get(balance, "propertyPlantEquipmentNet", year)
-        goodwill                  = get(balance, "goodwill", year)
-        total_assets              = get(balance, "totalAssets", year)
-        total_current_liabilities = get(balance, "totalCurrentLiabilities", year)
-        long_term_debt            = get(balance, "longTermDebt", year)
-        # FMP shortTermDebt covers both current portion of LTD and notes payable
-        notes_payable             = get(balance, "shortTermDebt", year) or 0
-        ltd_current               = 0   # bundled into shortTermDebt above
-        pension_liability         = None
-        total_equity              = get(balance, "totalEquity", year)
-        dow_equity                = get(balance, "totalStockholdersEquity", year)
-        retained_earnings         = get(balance, "retainedEarnings", year)
+        cash                = _yf(balance, year,
+                                  "Cash And Cash Equivalents",
+                                  "Cash Cash Equivalents And Short Term Investments")
+        trade_receivables   = _yf(balance, year,
+                                  "Accounts Receivable", "Net Receivables",
+                                  "Receivables")
+        inventories         = _yf(balance, year, "Inventory", "Inventories")
+        total_current_assets = _yf(balance, year, "Current Assets",
+                                   "Total Current Assets")
+        net_property        = _yf(balance, year, "Net PPE",
+                                  "Property Plant And Equipment Net")
+        goodwill            = _yf(balance, year, "Goodwill")
+        total_assets        = _yf(balance, year, "Total Assets")
+        total_current_liabilities = _yf(balance, year,
+                                        "Current Liabilities",
+                                        "Total Current Liabilities")
+        long_term_debt      = _yf(balance, year, "Long Term Debt",
+                                  "Long Term Debt And Capital Lease Obligation")
+        notes_payable       = _yf(balance, year, "Current Debt",
+                                  "Current Debt And Capital Lease Obligation") or 0
+        ltd_current         = 0   # bundled into Current Debt above
+        pension_liability   = None
+        total_equity        = _yf(balance, year, "Total Equity Gross Minority Interest",
+                                  "Stockholders Equity", "Total Stockholders Equity")
+        dow_equity          = _yf(balance, year,
+                                  "Stockholders Equity",
+                                  "Common Stock Equity",
+                                  "Total Stockholders Equity")
+        retained_earnings   = _yf(balance, year, "Retained Earnings")
 
         # ── Cash Flow Statement ───────────────────────────────────────────────
-        cfo                = get(cashflow, "operatingCashFlow", year)
-        # FMP capitalExpenditure is already negative — engine does cfo + capex = FCF
-        capex              = get(cashflow, "capitalExpenditure", year)
-        depreciation_amort = get(cashflow, "depreciationAndAmortization", year)
-        # FMP dividendsPaid and commonStockRepurchased are negative values
-        dividends_paid     = get(cashflow, "dividendsPaid", year)
-        buybacks           = get(cashflow, "commonStockRepurchased", year)
+        cfo = _yf(cashflow, year, "Operating Cash Flow",
+                  "Cash From Operations")
+        # yfinance Capital Expenditure is negative — engine does cfo + capex = FCF
+        capex = _yf(cashflow, year, "Capital Expenditure",
+                    "Purchase Of Property Plant And Equipment")
+        depreciation_amort = _yf(cashflow, year,
+                                 "Depreciation And Amortization",
+                                 "Depreciation Amortization Depletion")
+        dividends_paid = _yf(cashflow, year,
+                             "Common Stock Dividend Paid",
+                             "Cash Dividends Paid",
+                             "Payment Of Dividends")
+        buybacks = _yf(cashflow, year,
+                       "Repurchase Of Capital Stock",
+                       "Common Stock Repurchase",
+                       "Purchase Of Business")
 
         normalized[year] = {
             # Income Statement
