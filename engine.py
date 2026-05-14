@@ -164,8 +164,15 @@ def normalize(income, balance, cashflow):
     for year in YEARS:
 
         # ── Income Statement ──────────────────────────────────────────────────
-        revenue    = _yf(income, year, "Total Revenue")
-        cogs       = _yf(income, year, "Cost Of Revenue")
+        revenue    = _yf(income, year, "Total Revenue", "Revenue", "Net Revenue")
+        cogs       = _yf(income, year, "Cost Of Revenue",
+                         "Cost Of Goods Sold",
+                         "Cost Of Goods And Services Sold")
+        # Direct fallbacks for companies that don't break out COGS (e.g. payment processors)
+        gross_profit_direct      = _yf(income, year, "Gross Profit")
+        operating_income_direct  = _yf(income, year, "Operating Income",
+                                       "Total Operating Income As Reported",
+                                       "Operating Income Loss")
         rd_expense = _yf(income, year, "Research And Development") or 0
         sga        = _yf(income, year,
                          "Selling General Administrative",
@@ -248,6 +255,8 @@ def normalize(income, balance, cashflow):
             # Income Statement
             "revenue":               revenue,
             "cogs":                  cogs,
+            "gross_profit_direct":   gross_profit_direct,
+            "operating_income_direct": operating_income_direct,
             "rd_expense":            rd_expense,
             "sga":                   sga,
             "amortization":          amortization,
@@ -310,11 +319,18 @@ def calculate_metrics(normalized):
 
         # ── Profitability ─────────────────────────────────────────────────────
 
-        gross_profit = (d["revenue"] - d["cogs"]) if d["revenue"] is not None and d["cogs"] is not None else None
+        # Gross profit — prefer computed (Revenue - COGS), fall back to direct label
+        # (companies like Adyen/payment processors may not report COGS separately)
+        gross_profit = None
+        if d["revenue"] is not None and d["cogs"] is not None:
+            gross_profit = d["revenue"] - d["cogs"]
+        elif d.get("gross_profit_direct") is not None:
+            gross_profit = d["gross_profit_direct"]
         gross_margin = safe_divide(gross_profit, d["revenue"])
 
         # Core EBIT — excludes non-core items (equity earnings, sundry)
         # Formula: Revenue - COGS - R&D - SG&A - Amortization - Restructuring
+        # Falls back to directly reported Operating Income when components are missing
         core_operating_income = None
         if all(v is not None for v in [d["revenue"], d["cogs"], d["rd_expense"], d["sga"], d["amortization"]]):
             core_operating_income = (
@@ -326,6 +342,8 @@ def calculate_metrics(normalized):
                 - (d["restructuring"] or 0)
                 - (d["integration_costs"] or 0)
             )
+        elif d.get("operating_income_direct") is not None:
+            core_operating_income = d["operating_income_direct"]
 
         core_operating_margin = safe_divide(core_operating_income, d["revenue"])
 
