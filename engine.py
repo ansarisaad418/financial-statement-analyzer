@@ -173,6 +173,20 @@ def normalize(income, balance, cashflow):
         operating_income_direct  = _yf(income, year, "Operating Income",
                                        "Total Operating Income As Reported",
                                        "Operating Income Loss")
+        # Direct EBITDA/EBIT — yfinance computes these; more reliable than bottom-up
+        # for companies with non-standard expense structures (e.g. Adyen, European cos)
+        ebitda_direct = _yf(income, year, "EBITDA", "Normalized EBITDA")
+        ebit_direct   = _yf(income, year, "EBIT")
+
+        # Gross-vs-net revenue correction:
+        # Some companies (e.g. Adyen) report gross revenue in some years, with
+        # interchange/scheme fees as both revenue and COGS (COGS > 70% of revenue).
+        # In those years, Gross Profit equals the true Net Revenue.
+        # Override revenue so all margin denominators are consistent.
+        if (revenue is not None and cogs is not None and revenue > 0
+                and cogs / revenue > 0.70 and gross_profit_direct is not None):
+            revenue = gross_profit_direct
+            cogs    = None   # interchange COGS is now netted into revenue; clear it
         rd_expense = _yf(income, year, "Research And Development") or 0
         sga        = _yf(income, year,
                          "Selling General Administrative",
@@ -255,8 +269,10 @@ def normalize(income, balance, cashflow):
             # Income Statement
             "revenue":               revenue,
             "cogs":                  cogs,
-            "gross_profit_direct":   gross_profit_direct,
+            "gross_profit_direct":     gross_profit_direct,
             "operating_income_direct": operating_income_direct,
+            "ebitda_direct":           ebitda_direct,
+            "ebit_direct":             ebit_direct,
             "rd_expense":            rd_expense,
             "sga":                   sga,
             "amortization":          amortization,
@@ -328,11 +344,14 @@ def calculate_metrics(normalized):
             gross_profit = d["gross_profit_direct"]
         gross_margin = safe_divide(gross_profit, d["revenue"])
 
-        # Core EBIT — excludes non-core items (equity earnings, sundry)
-        # Formula: Revenue - COGS - R&D - SG&A - Amortization - Restructuring
-        # Falls back to directly reported Operating Income when components are missing
+        # Core EBIT — prefer directly reported Operating Income (captures all expense lines
+        # including tech/dev costs that may not be labeled R&D in yfinance for some companies).
+        # Fall back to bottom-up (Revenue - COGS - R&D - SGA) only when Operating Income
+        # is not available.
         core_operating_income = None
-        if all(v is not None for v in [d["revenue"], d["cogs"], d["rd_expense"], d["sga"], d["amortization"]]):
+        if d.get("operating_income_direct") is not None:
+            core_operating_income = d["operating_income_direct"]
+        elif all(v is not None for v in [d["revenue"], d["cogs"], d["rd_expense"], d["sga"], d["amortization"]]):
             core_operating_income = (
                 d["revenue"]
                 - d["cogs"]
@@ -342,8 +361,6 @@ def calculate_metrics(normalized):
                 - (d["restructuring"] or 0)
                 - (d["integration_costs"] or 0)
             )
-        elif d.get("operating_income_direct") is not None:
-            core_operating_income = d["operating_income_direct"]
 
         core_operating_margin = safe_divide(core_operating_income, d["revenue"])
 
@@ -355,10 +372,12 @@ def calculate_metrics(normalized):
         reported_ebit_margin = safe_divide(reported_ebit, d["revenue"])
         net_margin = safe_divide(d["net_income_dow"], d["revenue"])
 
-        # EBITDA (core operating income + D&A)
-        ebitda = None
-        if core_operating_income is not None and d["depreciation_amort"] is not None:
-            ebitda = core_operating_income + d["depreciation_amort"]
+        # EBITDA — prefer yfinance's directly reported value (already computed from filings).
+        # Fall back to core_operating_income + D&A when not available.
+        ebitda = d.get("ebitda_direct")
+        if ebitda is None:
+            if core_operating_income is not None and d["depreciation_amort"] is not None:
+                ebitda = core_operating_income + d["depreciation_amort"]
         ebitda_margin = safe_divide(ebitda, d["revenue"])
 
         # Non-core income as % of reported pre-tax income — measures dependency
