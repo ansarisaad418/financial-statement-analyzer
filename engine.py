@@ -892,7 +892,7 @@ def build_output(normalized, metrics, signals):
         "ticker": TICKER,
         "fiscal_years_analyzed": YEARS,
         "currency": "USD millions",
-        "data_source": "Financial Modeling Prep (FMP) API",
+        "data_source": "Yahoo Finance (yfinance)",
 
         "metrics_by_year": {
             str(year): metrics[year] for year in YEARS if year in metrics
