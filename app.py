@@ -158,11 +158,21 @@ if st.session_state.output is None:
         with st.spinner(f"Fetching data and running analysis..."):
             try:
                 if ticker_to_use.isdigit():
+                    # CIK number — resolve via SEC EDGAR
                     resolved_ticker, resolved_name = resolve_cik(ticker_to_use)
                     if not resolved_ticker:
                         st.error(f"Could not resolve CIK {ticker_to_use} to a ticker. Check the number.")
                         st.stop()
                     ticker_to_use = resolved_ticker
+
+                elif len(ticker_to_use) > 5 or " " in ticker_to_use:
+                    # Looks like a company name, not a ticker — search and take top result
+                    name_results = search_company(ticker_to_use)
+                    if name_results:
+                        ticker_to_use = name_results[0]["symbol"]
+                    else:
+                        st.error(f"Could not find a company matching '{ticker_to_use}'. Try the ticker symbol directly (e.g. AAPL).")
+                        st.stop()
 
                 income, balance, cashflow = load_all_statements(ticker_to_use)
                 normalized = normalize(income, balance, cashflow)
