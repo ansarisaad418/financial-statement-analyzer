@@ -173,6 +173,19 @@ def normalize(income, balance, cashflow):
         operating_income_direct  = _yf(income, year, "Operating Income",
                                        "Total Operating Income As Reported",
                                        "Operating Income Loss")
+        # Direct EBITDA/EBIT — yfinance computes these from filings; more reliable than
+        # bottom-up for companies with non-standard expense structures (e.g. Adyen).
+        ebitda_direct = _yf(income, year, "EBITDA", "Normalized EBITDA")
+        ebit_direct   = _yf(income, year, "EBIT")
+
+        # Gross-vs-net revenue correction:
+        # Some companies (e.g. Adyen 2022) include interchange/scheme pass-throughs
+        # in both revenue and COGS, making COGS > 70% of revenue.
+        # In those years Gross Profit equals the true Net Revenue — use it as denominator.
+        if (revenue is not None and cogs is not None and revenue > 0
+                and cogs / revenue > 0.70 and gross_profit_direct is not None):
+            revenue = gross_profit_direct
+            cogs    = None   # interchange COGS is now netted into revenue
         # Direct EBITDA/EBIT — yfinance computes these; more reliable than bottom-up
         # for companies with non-standard expense structures (e.g. Adyen, European cos)
         ebitda_direct = _yf(income, year, "EBITDA", "Normalized EBITDA")
@@ -271,6 +284,8 @@ def normalize(income, balance, cashflow):
             "cogs":                  cogs,
             "gross_profit_direct":     gross_profit_direct,
             "operating_income_direct": operating_income_direct,
+            "ebitda_direct":           ebitda_direct,
+            "ebit_direct":             ebit_direct,
             "ebitda_direct":           ebitda_direct,
             "ebit_direct":             ebit_direct,
             "rd_expense":            rd_expense,
