@@ -909,38 +909,3 @@ def run(ticker="DOW"):
 
 if __name__ == "__main__":
     run()
-        }
-    }
-
-    return output
-
-
-# ── MAIN ──────────────────────────────────────────────────────────────────────
-
-def run(ticker="DOW"):
-    print(f"Loading statements for {ticker}...")
-    income, balance, cashflow = load_all_statements(ticker)
-
-    print("Normalizing data...")
-    normalized = normalize(income, balance, cashflow)
-
-    print("Calculating metrics...")
-    metrics = calculate_metrics(normalized)
-
-    print("Generating signals...")
-    signals = generate_signals(metrics, normalized)
-
-    print("Assembling output...\n")
-    output = build_output(normalized, metrics, signals)
-
-    print(json.dumps(output, indent=2, default=str))
-
-    with open("output.json", "w") as f:
-        json.dump(output, f, indent=2, default=str)
-
-    print("\n✅ output.json saved.")
-    return output
-
-
-if __name__ == "__main__":
-    run()
