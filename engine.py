@@ -1,225 +1,249 @@
 """
 Financial Statement Analyzer — Engine
-Company: Dow Inc.
-Data:2019, 2020, 2021, 2022 (from 2023 10-K)
- 
+
 Pipeline:
-  1. Load raw Excel data
-  2. Normalize (map Dow's labels → standard names)
+  1. Fetch data from Financial Modeling Prep (FMP) API by ticker
+  2. Normalize (map FMP standard fields → internal names)
   3. Calculate metrics (margins, liquidity, leverage, efficiency, cash quality)
   4. Generate signals (rule-based flags)
   5. Output structured JSON → ready for AI interpretation
 """
- 
-import pandas as pd
+
 import json
 import math
- 
+import requests
+
 # ── CONFIG ────────────────────────────────────────────────────────────────────
- 
-FILE_PATH = "FinAnalyst.xlsx"
-YEARS = []  # auto-populated by load_all_statements()
- 
-# ── STEP 1: LOAD RAW DATA ─────────────────────────────────────────────────────
- 
-def load_statement(sheet_name, year_columns):
+
+YEARS        = []   # auto-populated by load_all_statements()
+FMP_API_KEY  = ""   # set from Streamlit secrets or sidebar
+COMPANY_NAME = ""   # set when data is loaded
+TICKER       = ""   # set when data is loaded
+
+# ── STEP 1: LOAD RAW DATA FROM FMP ───────────────────────────────────────────
+
+def _fmp_get(endpoint, params=None):
+    """Low-level FMP GET helper. Raises on HTTP or API errors."""
+    base = "https://financialmodelingprep.com/api/v3"
+    p = {"apikey": FMP_API_KEY}
+    if params:
+        p.update(params)
+    r = requests.get(f"{base}/{endpoint}", params=p, timeout=15)
+    r.raise_for_status()
+    data = r.json()
+    if isinstance(data, dict) and data.get("Error Message"):
+        raise ValueError(data["Error Message"])
+    return data
+
+
+def search_company(query):
     """
-    Reads a sheet and returns a dict: {row_label: {year: value}}
- 
-    After the Excel cleanup, all three sheets share the same clean structure:
-      - Row 0 is a header row containing year values (2022, 2021, 2020)
-      - Column 0 always contains row labels
-      - Year values appear either as integer column headers OR
-        as values in row 0 of an Unnamed column
- 
-    Strategy:
-      1. Find which columns contain the year values (either as headers or row-0 values)
-      2. Use column 0 as the label column
-      3. For each data row, read the value from the year column
+    Search FMP by company name or ticker symbol.
+    Returns a list: [{symbol, name, exchange, ...}, ...]
     """
-    # Read with no header first to inspect row 0
-    df_raw = pd.read_excel(FILE_PATH, sheet_name=sheet_name, header=None)
- 
-    # Find which row contains the year labels (scan first 3 rows)
-    year_col_map = {}  # year_int → col_index
-    header_row = None
-    for row_idx in range(min(3, len(df_raw))):
-        row_vals = df_raw.iloc[row_idx].tolist()
-        for col_idx, val in enumerate(row_vals):
-            try:
-                v = int(float(str(val).replace(",", "").strip()))
-                if v in year_columns:
-                    year_col_map[v] = col_idx
-                    header_row = row_idx
-            except (ValueError, TypeError):
-                pass
-        if year_col_map:
-            break
- 
-    # Data starts after the header row
-    data_start = (header_row + 1) if header_row is not None else 1
-    label_col_idx = 0
- 
-    def clean_val(val):
-        try:
-            cleaned = (str(val)
-                       .replace(",", "")
-                       .replace("$", "")
-                       .replace("\xa0", "")
-                       .replace("\u00a0", "")
-                       .replace(" ", "")
-                       .replace("—", "")
-                       .strip())
-            if cleaned in ("", "nan", "None", "-"):
-                return None
-            v = float(cleaned)
-            return None if math.isnan(v) else v
-        except (ValueError, TypeError):
-            return None
- 
-    result = {}
-    for row_idx in range(data_start, len(df_raw)):
-        row = df_raw.iloc[row_idx]
-        label = str(row[label_col_idx]).strip()
-        if label in ("", "nan", "None"):
-            continue
-        values = {}
-        for year, col_idx in year_col_map.items():
-            values[year] = clean_val(row[col_idx])
-        result[label] = values
- 
-    detected_years = sorted(year_col_map.keys(), reverse=True)
-    return result, detected_years
- 
- 
-def load_all_statements():
-    global YEARS
-    income, detected = load_statement("Income Statement", list(range(2015, 2030)))
-    YEARS = detected
-    balance, _ = load_statement("Balance Sheet", YEARS)
-    cashflow, _ = load_statement("Cash Flow Statement", YEARS)
+    return _fmp_get("search", {"query": query, "limit": 10})
+
+
+def resolve_cik(cik):
+    """
+    Resolve a CIK number to a ticker via FMP.
+    Returns (ticker, company_name) or (None, None) if not found.
+    """
+    data = _fmp_get(f"cik/{str(cik).zfill(10)}")
+    if data and isinstance(data, list) and len(data) > 0:
+        return data[0].get("symbol"), data[0].get("companyName")
+    return None, None
+
+
+def load_all_statements(ticker):
+    """
+    Fetches annual income statement, balance sheet, and cash flow from FMP.
+
+    Returns three dicts in format {fmp_field: {year: value_in_millions}}.
+    Sets globals: YEARS, TICKER, COMPANY_NAME.
+
+    FMP returns full dollar amounts (not millions). All monetary values are
+    divided by 1,000,000 so the rest of the pipeline works in USD millions.
+    """
+    global YEARS, TICKER, COMPANY_NAME
+
+    TICKER = ticker.strip().upper()
+
+    income_raw   = _fmp_get(f"income-statement/{TICKER}",        {"period": "annual", "limit": 10})
+    balance_raw  = _fmp_get(f"balance-sheet-statement/{TICKER}", {"period": "annual", "limit": 10})
+    cashflow_raw = _fmp_get(f"cash-flow-statement/{TICKER}",     {"period": "annual", "limit": 10})
+
+    if not income_raw:
+        raise ValueError(f"No data returned for '{TICKER}'. Check the ticker symbol and try again.")
+
+    # Resolve human-readable company name from FMP profile
+    try:
+        profile = _fmp_get(f"profile/{TICKER}")
+        COMPANY_NAME = profile[0].get("companyName", TICKER) if profile else TICKER
+    except Exception:
+        COMPANY_NAME = TICKER
+
+    # Fields that are ratios / metadata — do NOT divide by 1,000,000
+    _no_scale = {
+        "date", "symbol", "reportedCurrency", "cik", "fillingDate",
+        "acceptedDate", "calendarYear", "period", "link", "finalLink",
+        "grossProfitRatio", "ebitdaratio", "operatingIncomeRatio",
+        "incomeBeforeTaxRatio", "netIncomeRatio", "eps", "epsdiluted",
+        "weightedAverageShsOut", "weightedAverageShsOutDil",
+    }
+
+    def to_year_dict(records):
+        """Convert FMP list-of-annual-records → {field: {year: value}}."""
+        result = {}
+        for record in records:
+            year = int(record.get("calendarYear", 0))
+            if year == 0:
+                continue
+            for field, val in record.items():
+                if field in _no_scale:
+                    continue
+                if field not in result:
+                    result[field] = {}
+                if isinstance(val, (int, float)) and val == val:
+                    result[field][year] = round(val / 1_000_000, 3)
+                else:
+                    result[field][year] = None
+        return result
+
+    income   = to_year_dict(income_raw)
+    balance  = to_year_dict(balance_raw)
+    cashflow = to_year_dict(cashflow_raw)
+
+    # YEARS: sorted newest → oldest, driven by income statement
+    YEARS = sorted(income.get("revenue", {}).keys(), reverse=True)
+
     return income, balance, cashflow
- 
- 
+
+
 # ── STEP 2: NORMALIZE ─────────────────────────────────────────────────────────
- 
-def get(data, label, year):
-    """Safe lookup — returns None if label or year missing."""
-    return data.get(label, {}).get(year, None)
- 
- 
+
+def get(data, field, year):
+    """Safe lookup — returns None if field or year missing."""
+    return data.get(field, {}).get(year, None)
+
+
 def normalize(income, balance, cashflow):
     """
-    Maps Dow's exact SEC labels to clean standard names.
-    Returns a dict structured as: {year: {metric: value}}
-    Only uses years where balance sheet data exists (2021, 2022).
-    For income + cashflow, all 3 years are available.
+    Maps FMP standard field names to the engine's internal names.
+    All monetary values are already in USD millions (converted in load_all_statements).
+    Returns {year: {metric: value}}
+
+    FMP field reference:
+      Income:   revenue, costOfRevenue, researchAndDevelopmentExpenses,
+                sellingGeneralAndAdministrativeExpenses, depreciationAndAmortization,
+                interestIncome, interestExpense, incomeBeforeTax, incomeTaxExpense,
+                netIncome, totalOtherIncomeExpensesNet
+      Balance:  cashAndCashEquivalents, netReceivables, inventory,
+                totalCurrentAssets, propertyPlantEquipmentNet, goodwill,
+                totalAssets, totalCurrentLiabilities, longTermDebt,
+                shortTermDebt, totalStockholdersEquity, retainedEarnings, totalEquity
+      CashFlow: operatingCashFlow, capitalExpenditure, depreciationAndAmortization,
+                dividendsPaid, commonStockRepurchased
     """
     normalized = {}
- 
+
     for year in YEARS:
+
         # ── Income Statement ──────────────────────────────────────────────────
-        revenue         = get(income, "Net sales", year)
-        cogs            = get(income, "Cost of sales", year)
-        rd_expense      = get(income, "Research and development expenses", year)
-        sga             = get(income, "Selling, general and administrative expenses", year)
-        amortization    = get(income, "Amortization of intangibles", year)
-        restructuring   = get(income, "Restructuring and asset related charges - net", year)
-        integration     = get(income, "Integration and separation costs", year)
- 
-        # Non-core items — quarantined from margin calculations
-        equity_earnings = get(income, "Equity in earnings (losses) of nonconsolidated affiliates", year)
-        sundry          = get(income, "Sundry income (expense) - net", year)
- 
-        interest_income  = get(income, "Interest income", year)
-        interest_expense = get(income, "Interest expense and amortization of debt discount", year)
-        ebt              = get(income, "Income before income taxes", year)
-        tax              = get(income, "Provision for income taxes", year)
-        net_income       = get(income, "Net income", year)
-        net_income_dow   = get(income, "Net income available for Dow Inc. common stockholders", year)
- 
-        # ── Balance Sheet (all detected years) ────────────────────────────────
-        if year in YEARS:
-            cash              = get(balance, "Cash and cash equivalents", year)
-            trade_receivables = get(balance, "Trade (net of allowance for doubtful receivables - 2022: $110; 2021: $54)", year)
-            other_receivables = get(balance, "Other", year)
-            inventories       = get(balance, "Inventories", year)
-            other_current     = get(balance, "Other current assets", year)
-            total_current_assets = get(balance, "Total current assets", year)
- 
-            net_property      = get(balance, "Net property", year)
-            goodwill          = get(balance, "Goodwill", year)
-            total_assets      = get(balance, "Total Assets", year)
- 
-            total_current_liabilities = get(balance, "Total current liabilities", year)
-            long_term_debt    = get(balance, "Long-Term Debt", year)
-            ltd_current       = get(balance, "Long-term debt due within one year", year)
-            notes_payable     = get(balance, "Notes payable", year)
-            pension_liability = get(balance, "Pension and other postretirement benefits - noncurrent", year)
-            total_equity      = get(balance, "Total equity", year)
-            dow_equity = get(balance, "Dow Inc.\u2019s stockholders\u2019 equity", year)
-            retained_earnings = get(balance, "Retained earnings", year)
-        else:
-            # year not present in balance sheet
-            cash = trade_receivables = other_receivables = inventories = None
-            other_current = total_current_assets = net_property = goodwill = None
-            total_assets = total_current_liabilities = long_term_debt = None
-            ltd_current = notes_payable = pension_liability = None
-            total_equity = dow_equity = retained_earnings = None
- 
+        revenue          = get(income, "revenue", year)
+        cogs             = get(income, "costOfRevenue", year)
+        rd_expense       = get(income, "researchAndDevelopmentExpenses", year) or 0
+        sga              = get(income, "sellingGeneralAndAdministrativeExpenses", year)
+        # amortization: use IS D&A if broken out; default to 0 so core_operating_income
+        # computes as Revenue - COGS - R&D - SG&A (≈ EBIT), then EBITDA = EBIT + CF D&A
+        amortization     = get(income, "depreciationAndAmortization", year) or 0
+        restructuring    = None   # not a standard FMP field
+        integration      = None   # not a standard FMP field
+
+        # Non-core items
+        equity_earnings  = None   # not separately reported by FMP
+        sundry_income    = get(income, "totalOtherIncomeExpensesNet", year)
+
+        interest_income  = get(income, "interestIncome", year)
+        interest_expense = get(income, "interestExpense", year)
+        ebt              = get(income, "incomeBeforeTax", year)
+        tax              = get(income, "incomeTaxExpense", year)
+        net_income       = get(income, "netIncome", year)
+        net_income_dow   = net_income   # FMP netIncome = attributable to common shareholders
+
+        # ── Balance Sheet ─────────────────────────────────────────────────────
+        cash                      = get(balance, "cashAndCashEquivalents", year)
+        trade_receivables         = get(balance, "netReceivables", year)
+        inventories               = get(balance, "inventory", year)
+        total_current_assets      = get(balance, "totalCurrentAssets", year)
+        net_property              = get(balance, "propertyPlantEquipmentNet", year)
+        goodwill                  = get(balance, "goodwill", year)
+        total_assets              = get(balance, "totalAssets", year)
+        total_current_liabilities = get(balance, "totalCurrentLiabilities", year)
+        long_term_debt            = get(balance, "longTermDebt", year)
+        # FMP shortTermDebt covers both current portion of LTD and notes payable
+        notes_payable             = get(balance, "shortTermDebt", year) or 0
+        ltd_current               = 0   # bundled into shortTermDebt above
+        pension_liability         = None
+        total_equity              = get(balance, "totalEquity", year)
+        dow_equity                = get(balance, "totalStockholdersEquity", year)
+        retained_earnings         = get(balance, "retainedEarnings", year)
+
         # ── Cash Flow Statement ───────────────────────────────────────────────
-        cfo               = get(cashflow, "Cash provided by operating activities", year)
-        capex             = get(cashflow, "Capital expenditures", year)
-        depreciation_amort = get(cashflow, "Depreciation and amortization", year)
-        dividends_paid    = get(cashflow, "Dividends paid to stockholders", year)
-        buybacks          = get(cashflow, "Purchases of treasury stock", year)
- 
+        cfo                = get(cashflow, "operatingCashFlow", year)
+        # FMP capitalExpenditure is already negative — engine does cfo + capex = FCF
+        capex              = get(cashflow, "capitalExpenditure", year)
+        depreciation_amort = get(cashflow, "depreciationAndAmortization", year)
+        # FMP dividendsPaid and commonStockRepurchased are negative values
+        dividends_paid     = get(cashflow, "dividendsPaid", year)
+        buybacks           = get(cashflow, "commonStockRepurchased", year)
+
         normalized[year] = {
             # Income Statement
-            "revenue":              revenue,
-            "cogs":                 cogs,
-            "rd_expense":           rd_expense,
-            "sga":                  sga,
-            "amortization":         amortization,
-            "restructuring":        restructuring,
-            "integration_costs":    integration,
-            "equity_earnings":      equity_earnings,       # non-core
-            "sundry_income":        sundry,                # non-core
-            "interest_income":      interest_income,
-            "interest_expense":     interest_expense,
-            "ebt":                  ebt,
-            "tax":                  tax,
-            "net_income":           net_income,
-            "net_income_dow":       net_income_dow,
+            "revenue":               revenue,
+            "cogs":                  cogs,
+            "rd_expense":            rd_expense,
+            "sga":                   sga,
+            "amortization":          amortization,
+            "restructuring":         restructuring,
+            "integration_costs":     integration,
+            "equity_earnings":       equity_earnings,
+            "sundry_income":         sundry_income,
+            "interest_income":       interest_income,
+            "interest_expense":      interest_expense,
+            "ebt":                   ebt,
+            "tax":                   tax,
+            "net_income":            net_income,
+            "net_income_dow":        net_income_dow,
             # Balance Sheet
-            "cash":                 cash,
-            "trade_receivables":    trade_receivables,
-            "inventories":          inventories,
-            "total_current_assets": total_current_assets,
-            "net_property":         net_property,
-            "goodwill":             goodwill,
-            "total_assets":         total_assets,
+            "cash":                  cash,
+            "trade_receivables":     trade_receivables,
+            "inventories":           inventories,
+            "total_current_assets":  total_current_assets,
+            "net_property":          net_property,
+            "goodwill":              goodwill,
+            "total_assets":          total_assets,
             "total_current_liabilities": total_current_liabilities,
-            "long_term_debt":       long_term_debt,
-            "ltd_current":          ltd_current,
-            "notes_payable":        notes_payable,
-            "pension_liability":    pension_liability,
-            "total_equity":         total_equity,
-            "dow_equity":           dow_equity,
-            "retained_earnings":    retained_earnings,
+            "long_term_debt":        long_term_debt,
+            "ltd_current":           ltd_current,
+            "notes_payable":         notes_payable,
+            "pension_liability":     pension_liability,
+            "total_equity":          total_equity,
+            "dow_equity":            dow_equity,
+            "retained_earnings":     retained_earnings,
             # Cash Flow
-            "cfo":                  cfo,
-            "capex":                capex,
-            "depreciation_amort":   depreciation_amort,
-            "dividends_paid":       dividends_paid,
-            "buybacks":             buybacks,
+            "cfo":                   cfo,
+            "capex":                 capex,
+            "depreciation_amort":    depreciation_amort,
+            "dividends_paid":        dividends_paid,
+            "buybacks":              buybacks,
         }
- 
+
     return normalized
- 
- 
+
+
 # ── STEP 3: CALCULATE METRICS ─────────────────────────────────────────────────
- 
+
 def safe_divide(numerator, denominator):
     """Returns None if either value is None or denominator is zero."""
     if numerator is None or denominator is None:
@@ -227,22 +251,22 @@ def safe_divide(numerator, denominator):
     if denominator == 0:
         return None
     return round(numerator / denominator, 4)
- 
- 
+
+
 def calculate_metrics(normalized):
     """
     Computes all financial ratios and derived metrics.
     Returns {year: {metric_name: value}}
     """
     metrics = {}
- 
+
     for year, d in normalized.items():
- 
+
         # ── Profitability ─────────────────────────────────────────────────────
- 
+
         gross_profit = (d["revenue"] - d["cogs"]) if d["revenue"] is not None and d["cogs"] is not None else None
         gross_margin = safe_divide(gross_profit, d["revenue"])
- 
+
         # Core EBIT — excludes non-core items (equity earnings, sundry)
         # Formula: Revenue - COGS - R&D - SG&A - Amortization - Restructuring
         core_operating_income = None
@@ -256,68 +280,68 @@ def calculate_metrics(normalized):
                 - (d["restructuring"] or 0)
                 - (d["integration_costs"] or 0)
             )
- 
+
         core_operating_margin = safe_divide(core_operating_income, d["revenue"])
- 
+
         # Reported EBIT (includes non-core — useful for comparison)
         reported_ebit = None
         if d["ebt"] is not None and d["interest_expense"] is not None:
             reported_ebit = d["ebt"] + d["interest_expense"] - (d["interest_income"] or 0)
- 
+
         reported_ebit_margin = safe_divide(reported_ebit, d["revenue"])
         net_margin = safe_divide(d["net_income_dow"], d["revenue"])
- 
+
         # EBITDA (core operating income + D&A)
         ebitda = None
         if core_operating_income is not None and d["depreciation_amort"] is not None:
             ebitda = core_operating_income + d["depreciation_amort"]
         ebitda_margin = safe_divide(ebitda, d["revenue"])
- 
+
         # Non-core income as % of reported pre-tax income — measures dependency
         non_core_total = (d["equity_earnings"] or 0) + (d["sundry_income"] or 0)
         non_core_as_pct_ebt = safe_divide(non_core_total, d["ebt"]) if d["ebt"] is not None else None
- 
+
         # ── Cash Quality ──────────────────────────────────────────────────────
         fcf = None
         if d["cfo"] is not None and d["capex"] is not None:
             fcf = d["cfo"] + d["capex"]  # capex is already negative in the data
- 
+
         fcf_conversion = safe_divide(fcf, d["net_income_dow"])
         cfo_conversion = safe_divide(d["cfo"], d["net_income_dow"])
- 
+
         # ── Liquidity (balance sheet years only) ─────────────────────────────
         current_ratio = safe_divide(d["total_current_assets"], d["total_current_liabilities"])
- 
+
         # Quick ratio = (Current Assets - Inventories) / Current Liabilities
         quick_ratio = None
         if d["total_current_assets"] is not None and d["inventories"] is not None and d["total_current_liabilities"] is not None:
             quick_ratio = round((d["total_current_assets"] - d["inventories"]) / d["total_current_liabilities"], 4)
- 
+
         # ── Leverage ──────────────────────────────────────────────────────────
         total_debt = None
         if d["long_term_debt"] is not None and d["ltd_current"] is not None and d["notes_payable"] is not None:
             total_debt = d["long_term_debt"] + d["ltd_current"] + d["notes_payable"]
- 
+
         net_debt = None
         if total_debt is not None and d["cash"] is not None:
             net_debt = total_debt - d["cash"]
- 
+
         net_debt_to_ebitda = safe_divide(net_debt, ebitda)
         debt_to_equity = safe_divide(total_debt, d["dow_equity"])
- 
+
         interest_coverage = safe_divide(core_operating_income, d["interest_expense"])
- 
+
         # ── Efficiency ────────────────────────────────────────────────────────
         asset_turnover = safe_divide(d["revenue"], d["total_assets"])
- 
+
         # ── Shareholder Returns ───────────────────────────────────────────────
         total_cash_returned = None
         if d["dividends_paid"] is not None and d["buybacks"] is not None:
             # Both are negative in the cash flow statement
             total_cash_returned = abs(d["dividends_paid"]) + abs(d["buybacks"])
- 
+
         cash_returned_vs_fcf = safe_divide(total_cash_returned, fcf) if fcf is not None else None
- 
+
         # ── DuPont (5-factor) — balance sheet years only ──────────────────────
         # ROE = Tax Burden × Interest Burden × EBIT Margin × Asset Turnover × Leverage
         tax_burden       = safe_divide(d["net_income_dow"], d["ebt"])
@@ -326,9 +350,9 @@ def calculate_metrics(normalized):
         roe_dupont       = None
         if all(v is not None for v in [tax_burden, interest_burden, core_operating_margin, asset_turnover, leverage_factor]):
             roe_dupont = round(tax_burden * interest_burden * core_operating_margin * asset_turnover * leverage_factor, 4)
- 
+
         roe_simple = safe_divide(d["net_income_dow"], d["dow_equity"])
- 
+
         metrics[year] = {
             # Profitability
             "gross_profit":             round(gross_profit, 1) if gross_profit is not None else None,
@@ -341,45 +365,45 @@ def calculate_metrics(normalized):
             "ebitda":                   round(ebitda, 1) if ebitda is not None else None,
             "ebitda_margin":            ebitda_margin,
             "non_core_as_pct_ebt":      non_core_as_pct_ebt,
- 
+
             # Cash Quality
             "fcf":                      round(fcf, 1) if fcf is not None else None,
             "fcf_conversion":           fcf_conversion,
             "cfo_conversion":           cfo_conversion,
- 
+
             # Liquidity
             "current_ratio":            current_ratio,
             "quick_ratio":              quick_ratio,
- 
+
             # Leverage
             "total_debt":               round(total_debt, 1) if total_debt is not None else None,
             "net_debt":                 round(net_debt, 1) if net_debt is not None else None,
             "net_debt_to_ebitda":       net_debt_to_ebitda,
             "debt_to_equity":           debt_to_equity,
             "interest_coverage":        interest_coverage,
- 
+
             # Efficiency
             "asset_turnover":           asset_turnover,
             "revenue":                  d["revenue"],
- 
+
             # Shareholder Returns
             "total_cash_returned":      round(total_cash_returned, 1) if total_cash_returned is not None else None,
             "cash_returned_vs_fcf":     cash_returned_vs_fcf,
- 
+
             # DuPont
             "roe_simple":               roe_simple,
             "roe_dupont":               roe_dupont,
             "dupont_tax_burden":        tax_burden,
             "dupont_interest_burden":   interest_burden,
             "dupont_leverage_factor":   leverage_factor,
-        
+
         }
- 
+
     return metrics
- 
- 
+
+
 # ── STEP 4: GENERATE SIGNALS ──────────────────────────────────────────────────
- 
+
 def generate_signals(metrics, normalized):
     """
     Rule-based signal detection. Each signal has:
@@ -389,7 +413,7 @@ def generate_signals(metrics, normalized):
       - finding: plain English description of what the rule found
     """
     signals = []
- 
+
     def add(metric, signal, severity, finding):
         signals.append({
             "metric": metric,
@@ -397,15 +421,15 @@ def generate_signals(metrics, normalized):
             "severity": severity,
             "finding": finding
         })
- 
+
     latest, prior = YEARS[0], YEARS[1]
     m_latest = metrics.get(latest)
     m_prior  = metrics.get(prior)
     m_prev   = metrics.get(YEARS[2]) if len(YEARS) > 2 else None
- 
+
     # legacy aliases so existing signal code below stays readable
     m22, m21, m20 = m_latest, m_prior, m_prev
- 
+
     # ── FCF Conversion ────────────────────────────────────────────────────────
     if m_latest and m_latest["fcf_conversion"] is not None:
         fcf_conv = m_latest["fcf_conversion"]
@@ -418,7 +442,7 @@ def generate_signals(metrics, normalized):
         else:
             add("fcf_conversion", "POSITIVE", "LOW",
                 f"FCF conversion in {latest} is {fcf_conv:.1%} — above 1x, indicating strong earnings quality.")
- 
+
     # ── Non-Core Income Dependency ────────────────────────────────────────────
     for year, m in [(y, metrics.get(y)) for y in YEARS[:3]]:
         if m and m["non_core_as_pct_ebt"] is not None:
@@ -426,7 +450,7 @@ def generate_signals(metrics, normalized):
             if abs(pct) > 0.20:
                 add("non_core_income", "WATCH", "MEDIUM",
                     f"In {year}, non-core items (equity earnings + sundry) represented {pct:.1%} of pre-tax income. Reported earnings are sensitive to volatile, non-operational items.")
- 
+
     # ── Leverage ──────────────────────────────────────────────────────────────
     if m_latest and m_latest["net_debt_to_ebitda"] is not None:
         nd_ebitda = m_latest["net_debt_to_ebitda"]
@@ -439,20 +463,20 @@ def generate_signals(metrics, normalized):
         else:
             add("net_debt_to_ebitda", "POSITIVE", "LOW",
                 f"Net Debt/EBITDA of {nd_ebitda:.1f}x in {latest} is conservative.")
- 
+
     # ── Shareholder Return vs FCF ─────────────────────────────────────────────
     if m_latest and m_latest["cash_returned_vs_fcf"] is not None:
         cr_fcf = m_latest["cash_returned_vs_fcf"]
         if cr_fcf > 1.0:
             add("capital_allocation", "NEGATIVE", "HIGH",
-                f"In {latest}, Dow returned {cr_fcf:.1%} of FCF to shareholders (dividends + buybacks). Returning more cash than generated — funded by debt or asset sales.")
+                f"In {latest}, {COMPANY_NAME} returned {cr_fcf:.1%} of FCF to shareholders (dividends + buybacks). Returning more cash than generated — funded by debt or asset sales.")
         elif cr_fcf > 0.75:
             add("capital_allocation", "WATCH", "MEDIUM",
-                f"In {latest}, Dow returned {cr_fcf:.1%} of FCF to shareholders. Aggressive but sustainable if FCF holds.")
+                f"In {latest}, {COMPANY_NAME} returned {cr_fcf:.1%} of FCF to shareholders. Aggressive but sustainable if FCF holds.")
         else:
             add("capital_allocation", "POSITIVE", "LOW",
-                f"In {latest}, Dow returned {cr_fcf:.1%} of FCF to shareholders — retaining capital for reinvestment.")
- 
+                f"In {latest}, {COMPANY_NAME} returned {cr_fcf:.1%} of FCF to shareholders — retaining capital for reinvestment.")
+
     # ── Restructuring Recurrence ──────────────────────────────────────────────
     restructuring_years = []
     for year, data in normalized.items():
@@ -462,7 +486,7 @@ def generate_signals(metrics, normalized):
     if len(restructuring_years) >= 2:
         add("restructuring", "WATCH", "MEDIUM",
             f"Restructuring charges appear in {len(restructuring_years)} out of {len(YEARS)} years ({', '.join(str(y) for y in sorted(restructuring_years, reverse=True))}). Recurring 'non-recurring' charges are an earnings quality red flag.")
- 
+
     # ── Liquidity ─────────────────────────────────────────────────────────────
     if m_latest and m_latest["current_ratio"] is not None:
         cr = m_latest["current_ratio"]
@@ -475,16 +499,15 @@ def generate_signals(metrics, normalized):
         else:
             add("current_ratio", "POSITIVE", "LOW",
                 f"Current ratio of {cr:.2f}x in {latest} is comfortable.")
- 
- 
+
     n_latest = normalized.get(latest, {})
     n_prior  = normalized.get(prior, {})
     n_prev   = normalized.get(YEARS[2], {}) if len(YEARS) > 2 else {}
- 
+
     rev_prior,  rev_latest  = n_prior.get("revenue"),  n_latest.get("revenue")
     oi_prior  = m_prior["core_operating_income"]  if m_prior  else None
     oi_latest = m_latest["core_operating_income"] if m_latest else None
- 
+
     if all(v is not None for v in [rev_prior, rev_latest, oi_prior, oi_latest]) and rev_prior != 0 and oi_prior != 0:
         rev_growth = (rev_latest - rev_prior) / abs(rev_prior)
         oi_growth  = (oi_latest - oi_prior)  / abs(oi_prior)
@@ -500,19 +523,19 @@ def generate_signals(metrics, normalized):
             add("operating_leverage", "NEGATIVE", "HIGH",
                 f"Revenue grew {rev_growth:.1%} from {prior} to {latest} but core operating income contracted {abs(oi_growth):.1%}. "
                 f"Margin compression is absorbing all top-line growth.")
- 
-    # ── COMPOSITION SIGNAL 2: Margin Driver Decomposition ────────────────────
+
+    # ── COMPOSITION SIGNAL 2: Margin Driver Decomposition ────────────────
     # Gross margin stable but operating margin falling → SG&A/overhead problem
     if m_prior and m_latest:
         gm_prior  = m_prior.get("gross_margin")
         gm_latest = m_latest.get("gross_margin")
         om_prior  = m_prior.get("core_operating_margin")
         om_latest = m_latest.get("core_operating_margin")
- 
+
         if all(v is not None for v in [gm_prior, gm_latest, om_prior, om_latest]):
             gm_change = gm_latest - gm_prior
             om_change = om_latest - om_prior
- 
+
             if abs(gm_change) < 0.01 and om_change < -0.02:
                 add("margin_driver", "NEGATIVE", "MEDIUM",
                     f"Gross margin held relatively stable ({gm_prior:.1%} → {gm_latest:.1%}) while core operating margin "
@@ -526,7 +549,7 @@ def generate_signals(metrics, normalized):
                 add("margin_driver", "POSITIVE", "LOW",
                     f"Gross margin declined ({gm_prior:.1%} → {gm_latest:.1%}) but operating margin held stable ({om_prior:.1%} → {om_latest:.1%}). "
                     f"Management absorbed input cost pressure through SG&A discipline.")
- 
+
     # ── COMPOSITION SIGNAL 3: Leverage + Coverage Interaction ────────────────
     # Rising debt AND falling coverage = compounded risk
     if m_prior and m_latest:
@@ -534,11 +557,11 @@ def generate_signals(metrics, normalized):
         nd_latest = m_latest.get("net_debt_to_ebitda")
         ic_prior  = m_prior.get("interest_coverage")
         ic_latest = m_latest.get("interest_coverage")
- 
+
         if all(v is not None for v in [nd_prior, nd_latest, ic_prior, ic_latest]):
             leverage_rising  = nd_latest > nd_prior * 1.05
             coverage_falling = ic_latest < ic_prior * 0.95
- 
+
             if leverage_rising and coverage_falling:
                 add("leverage_coverage_interaction", "NEGATIVE", "HIGH",
                     f"Net Debt/EBITDA rose from {nd_prior:.1f}x to {nd_latest:.1f}x while interest coverage fell from "
@@ -550,7 +573,7 @@ def generate_signals(metrics, normalized):
                     f"to {ic_latest:.1f}x. Leverage and coverage are moving in a constructive direction.")
     all_years = list(reversed(YEARS))  # oldest → newest for trend loops
     all_m = {y: metrics.get(y) for y in all_years}
- 
+
     # ── 5-Year Margin Trend (replaces 3-year) ─────────────────────────────────
     margin_5yr = [(y, all_m[y]["core_operating_margin"])
                   for y in all_years
@@ -566,7 +589,7 @@ def generate_signals(metrics, normalized):
             add("core_operating_margin_5yr", "WATCH", "MEDIUM",
                 f"Core operating margin peaked at {vals[-2]:.1%} in {yrs[-2]} and has since contracted to "
                 f"{vals[-1]:.1%} in {yrs[-1]}, despite improvement in prior years.")
- 
+
     # ── Leverage Trend (5-year) ───────────────────────────────────────────────
     nd_5yr = [(y, all_m[y]["net_debt_to_ebitda"])
               for y in all_years
@@ -584,7 +607,7 @@ def generate_signals(metrics, normalized):
                 f"Net Debt/EBITDA has declined consistently: "
                 f"{' → '.join(f'{v:.1f}x' for v in nd_vals)} ({nd_yrs[0]}–{nd_yrs[-1]}). "
                 f"Sustained deleveraging is a strong balance sheet signal.")
- 
+
     # ── Interest Coverage Trend (5-year) ─────────────────────────────────────
     ic_5yr = [(y, all_m[y]["interest_coverage"])
               for y in all_years
@@ -601,7 +624,7 @@ def generate_signals(metrics, normalized):
             add("interest_coverage_trend", "WATCH", "MEDIUM",
                 f"Interest coverage peaked at {ic_vals[-2]:.1f}x in {ic_yrs[-2]} and declined to "
                 f"{ic_vals[-1]:.1f}x in {ic_yrs[-1]}.")
- 
+
     # ── ROE Trend (5-year) ────────────────────────────────────────────────────
     roe_5yr = [(y, all_m[y]["roe_simple"])
                for y in all_years
@@ -622,7 +645,7 @@ def generate_signals(metrics, normalized):
             add("roe_trend", "POSITIVE", "LOW",
                 f"ROE has improved consistently: "
                 f"{' → '.join(f'{v:.1%}' for v in roe_vals)} ({roe_yrs[0]}–{roe_yrs[-1]}).")
- 
+
     # ── Revenue CAGR (5-year) ─────────────────────────────────────────────────
     rev_5yr = [(y, normalized[y]["revenue"])
                for y in all_years
@@ -645,7 +668,7 @@ def generate_signals(metrics, normalized):
                 add("revenue_cagr", "NEGATIVE", "MEDIUM",
                     f"Revenue declined at a {cagr:.1%} CAGR from {r_start_yr} to {r_end_yr} "
                     f"(\\${r_start:,.0f}M → \\${r_end:,.0f}M). Top-line contraction over the full period.")
- 
+
     # ── Liquidity Trend (5-year) ──────────────────────────────────────────────
     liq_5yr = [(y, all_m[y]["current_ratio"])
                for y in all_years
@@ -669,15 +692,15 @@ def generate_signals(metrics, normalized):
     if len(fcf_5yr) >= 3:
         fcf_vals = [v for _, v in fcf_5yr]
         fcf_yrs  = [y for y, _ in fcf_5yr]
+        # pre-compute formatted string to avoid nested f-string backslash (Python < 3.12)
+        _fcf_str = " → ".join("\\${:,.0f}M".format(v) for v in fcf_vals)
         if all(fcf_vals[i] > fcf_vals[i-1] for i in range(1, len(fcf_vals))):
             add("fcf_trend", "POSITIVE", "LOW",
-                f"Free cash flow has grown every year: "
-                f"{' → '.join(f'\\${v:,.0f}M' for v in fcf_vals)} ({fcf_yrs[0]}–{fcf_yrs[-1]}). "
+                f"Free cash flow has grown every year: {_fcf_str} ({fcf_yrs[0]}–{fcf_yrs[-1]}). "
                 f"Sustained FCF growth signals strong cash generation quality.")
         elif all(fcf_vals[i] < fcf_vals[i-1] for i in range(1, len(fcf_vals))):
             add("fcf_trend", "NEGATIVE", "HIGH",
-                f"Free cash flow has declined every year: "
-                f"{' → '.join(f'\\${v:,.0f}M' for v in fcf_vals)} ({fcf_yrs[0]}–{fcf_yrs[-1]}). "
+                f"Free cash flow has declined every year: {_fcf_str} ({fcf_yrs[0]}–{fcf_yrs[-1]}). "
                 f"Sustained FCF deterioration undermines dividend and reinvestment capacity.")
         else:
             peak_val = max(fcf_vals)
@@ -689,7 +712,7 @@ def generate_signals(metrics, normalized):
                     f"Free cash flow peaked at \\${peak_val:,.0f}M in {peak_yr} and has since fallen to "
                     f"\\${latest_val:,.0f}M in {latest_yr} — a {((latest_val-peak_val)/abs(peak_val)):.1%} decline from peak. "
                     f"FCF volatility warrants monitoring.")
- 
+
     # ── Leverage Trend — Volatile / Peak Pattern ──────────────────────────────
     nd_all = [(y, all_m[y]["net_debt_to_ebitda"])
               for y in all_years
@@ -714,7 +737,7 @@ def generate_signals(metrics, normalized):
             add("leverage_trend", "POSITIVE", "LOW",
                 f"Net Debt/EBITDA has remained stable across the full period "
                 f"(range: {trough_nd:.1f}x – {peak_nd:.1f}x). Consistent leverage management.")
- 
+
     # ── Dividend Sustainability (5-year) ──────────────────────────────────────
     div_5yr = []
     for y in all_years:
@@ -724,7 +747,7 @@ def generate_signals(metrics, normalized):
         fcf_val = m.get("fcf") if m else None
         if div is not None and fcf_val is not None and fcf_val > 0:
             div_5yr.append((y, abs(div), fcf_val, abs(div) / fcf_val))
- 
+
     if len(div_5yr) >= 3:
         ratios        = [r for _, _, _, r in div_5yr]
         div_yrs       = [y for y, _, _, _ in div_5yr]
@@ -748,60 +771,60 @@ def generate_signals(metrics, normalized):
                 f"Dividends have averaged {avg_ratio:.1%} of FCF over {len(div_5yr)} FCF-positive years "
                 f"({div_yrs[0]}–{div_yrs[-1]}){excl_note}. Dividend is well-covered with room for reinvestment.")
     return signals
- 
- 
+
+
 # ── STEP 5: ASSEMBLE JSON OUTPUT ──────────────────────────────────────────────
- 
+
 def build_output(normalized, metrics, signals):
     """
     Assembles the final structured JSON.
     This is what gets sent to the AI — no raw line items, only computed values.
     """
- 
+
 # ── Upgraded Trend Engine ─────────────────────────────────────────────────
     def analyze_trend(metric_name):
         """Generates a rich trend dictionary: direction, yoy_change, magnitude, consistency."""
         v_latest = metrics.get(YEARS[0], {}).get(metric_name)
         v_prior  = metrics.get(YEARS[1], {}).get(metric_name) if len(YEARS) > 1 else None
         v_prev   = metrics.get(YEARS[2], {}).get(metric_name) if len(YEARS) > 2 else None
- 
+
         # map to readable names for logic below
         v22, v21, v20 = v_latest, v_prior, v_prev
- 
+
         if v21 is None or v22 is None:
             return {"direction": "insufficient_data", "yoy_change": None, "magnitude": None, "consistency": None}
- 
+
         # 1. Math routing: basis points for ratios, relative % for absolute dollars
         is_ratio = "margin" in metric_name or "conversion" in metric_name or "ratio" in metric_name
-        
+
         if is_ratio:
             delta = v22 - v21
-            yoy_change = delta  
+            yoy_change = delta
             magnitude_val = abs(delta)
             high_thresh, low_thresh = 0.05, 0.01  # 500 bps = high, 100 bps = moderate
         else:
             if v21 == 0: return {"direction": "not_meaningful", "yoy_change": None, "magnitude": None, "consistency": None}
             delta = v22 - v21
-            yoy_change = delta / abs(v21)  
+            yoy_change = delta / abs(v21)
             magnitude_val = abs(yoy_change)
             high_thresh, low_thresh = 0.20, 0.05  # 20% = high, 5% = moderate
- 
+
         # 2. Direction
         # Materiality threshold: 10 bps for margins, $1M for absolute dollars
-        threshold = 0.001 if is_ratio else 1.0 
-        
-        if delta > threshold: 
+        threshold = 0.001 if is_ratio else 1.0
+
+        if delta > threshold:
             direction = "improving"
-        elif delta < -threshold: 
+        elif delta < -threshold:
             direction = "deteriorating"
-        else: 
+        else:
             direction = "stable"
- 
+
         # 3. Magnitude
         if magnitude_val > high_thresh: magnitude = "high"
         elif magnitude_val > low_thresh: magnitude = "moderate"
         else: magnitude = "low"
- 
+
         # 4. Consistency
         consistency = "insufficient_data"
         if v20 is not None:
@@ -812,26 +835,26 @@ def build_output(normalized, metrics, signals):
                 consistency = "consistent"
             else:
                 consistency = "volatile"
- 
+
         return {
             "direction": direction,
             "yoy_change": round(yoy_change, 4),
             "magnitude": magnitude,
             "consistency": consistency
         }
- 
+
     # ── Assemble Output ───────────────────────────────────────────────────────
     output = {
-        "company": "Dow Inc.",
-        "ticker": "DOW",
+        "company": COMPANY_NAME,
+        "ticker": TICKER,
         "fiscal_years_analyzed": YEARS,
         "currency": "USD millions",
-        "data_source": "SEC 10-K 2023 Filing",
- 
+        "data_source": "Financial Modeling Prep (FMP) API",
+
         "metrics_by_year": {
             str(year): metrics[year] for year in YEARS if year in metrics
         },
- 
+
         "trends": {
             "core_operating_margin":  analyze_trend("core_operating_margin"),
             "gross_margin":           analyze_trend("gross_margin"),
@@ -840,9 +863,9 @@ def build_output(normalized, metrics, signals):
             "revenue":                analyze_trend("revenue"),
             "ebitda_margin":          analyze_trend("ebitda_margin"),
         },
- 
+
         "signals": signals,
- 
+
         "signal_summary": {
             "total":    len(signals),
             "negative": len([s for s in signals if s["signal"] == "NEGATIVE"]),
@@ -851,38 +874,73 @@ def build_output(normalized, metrics, signals):
             "high_severity": len([s for s in signals if s["severity"] == "HIGH"]),
         }
     }
- 
-    return output   
- 
- 
+
+    return output
+
+
 # ── MAIN ──────────────────────────────────────────────────────────────────────
- 
-def run():
-    print("Loading statements...")
-    income, balance, cashflow = load_all_statements()
- 
+
+def run(ticker="DOW"):
+    print(f"Loading statements for {ticker}...")
+    income, balance, cashflow = load_all_statements(ticker)
+
     print("Normalizing data...")
     normalized = normalize(income, balance, cashflow)
- 
+
     print("Calculating metrics...")
     metrics = calculate_metrics(normalized)
- 
+
     print("Generating signals...")
     signals = generate_signals(metrics, normalized)
- 
+
     print("Assembling output...\n")
     output = build_output(normalized, metrics, signals)
- 
+
     # Print clean JSON
     print(json.dumps(output, indent=2, default=str))
- 
+
     # Also save to file
     with open("output.json", "w") as f:
         json.dump(output, f, indent=2, default=str)
- 
+
     print("\n✅ output.json saved.")
     return output
- 
- 
+
+
+if __name__ == "__main__":
+    run()
+        }
+    }
+
+    return output
+
+
+# ── MAIN ──────────────────────────────────────────────────────────────────────
+
+def run(ticker="DOW"):
+    print(f"Loading statements for {ticker}...")
+    income, balance, cashflow = load_all_statements(ticker)
+
+    print("Normalizing data...")
+    normalized = normalize(income, balance, cashflow)
+
+    print("Calculating metrics...")
+    metrics = calculate_metrics(normalized)
+
+    print("Generating signals...")
+    signals = generate_signals(metrics, normalized)
+
+    print("Assembling output...\n")
+    output = build_output(normalized, metrics, signals)
+
+    print(json.dumps(output, indent=2, default=str))
+
+    with open("output.json", "w") as f:
+        json.dump(output, f, indent=2, default=str)
+
+    print("\n✅ output.json saved.")
+    return output
+
+
 if __name__ == "__main__":
     run()

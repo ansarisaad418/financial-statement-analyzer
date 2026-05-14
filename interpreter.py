@@ -1,6 +1,6 @@
 """
-Financial Statement Analyzer — AI Interpretation Layer
-Reads output.json produced by engine.py and sends it to Gemini for analyst commentary.
+Financial Statement Analyzer - AI Interpretation Layer
+Reads output from engine.py and sends to Gemini for analyst commentary.
 
 Rules:
   - AI receives ONLY pre-computed metrics and signals. No raw numbers.
@@ -21,14 +21,11 @@ except Exception:
 
 INPUT_FILE = "output.json"
 
-# ── LOAD COMPUTED DATA ────────────────────────────────────────────────────────
 
 def load_analysis():
     with open(INPUT_FILE, "r") as f:
         return json.load(f)
 
-
-# ── BUILD PROMPT ──────────────────────────────────────────────────────────────
 
 def build_prompt(data):
     company  = data["company"]
@@ -54,8 +51,13 @@ def build_prompt(data):
                     metrics_block += f"    {k}: {v}\n"
 
     trends_block = ""
-    for metric, direction in trends.items():
-        trends_block += f"  {metric}: {direction['2020_to_2021']} (2020→2021), {direction['2021_to_2022']} (2021→2022)\n"
+    for metric, trend in trends.items():
+        direction   = trend.get("direction", "insufficient_data")
+        yoy         = trend.get("yoy_change")
+        magnitude   = trend.get("magnitude", "")
+        consistency = trend.get("consistency", "")
+        yoy_str     = f"{yoy:+.1%}" if yoy is not None else "n/a"
+        trends_block += f"  {metric}: {direction}, YoY change: {yoy_str} [{magnitude} move, {consistency}]\n"
 
     signals_block = ""
     for s in signals:
@@ -64,7 +66,7 @@ def build_prompt(data):
     prompt = f"""
 You are a senior equity research analyst writing a structured company analysis.
 
-STRICT RULES — you must follow these without exception:
+STRICT RULES - you must follow these without exception:
 1. Use ONLY the pre-computed metrics and signals provided below. Do NOT perform any calculations.
 2. Do NOT invent, estimate, or reference any numbers not explicitly provided.
 3. Do NOT contradict any signal. If a signal says deteriorating, your commentary must reflect that.
@@ -82,17 +84,17 @@ PRE-COMPUTED METRICS:
 TREND DIRECTIONS:
 {trends_block}
 
-RULE-BASED SIGNALS ({summary['total']} total — {summary['positive']} positive, {summary['watch']} watch, {summary['negative']} negative):
+RULE-BASED SIGNALS ({summary['total']} total - {summary['positive']} positive, {summary['watch']} watch, {summary['negative']} negative):
 {signals_block}
 
-OUTPUT STRUCTURE — write exactly these five sections:
+OUTPUT STRUCTURE - write exactly these five sections:
 
 1. EXECUTIVE SUMMARY (3 sentences max)
    The single most important takeaway about this company's financial health.
    Lead with the dominant narrative from the signals, not a balanced summary.
 
 2. PROFITABILITY
-   Analyze margin trajectory across the 3 years. Distinguish core operating performance
+   Analyze margin trajectory across the years. Distinguish core operating performance
    from reported figures. Call out any non-core income dependency explicitly.
 
 3. CASH GENERATION & EARNINGS QUALITY
@@ -108,13 +110,10 @@ OUTPUT STRUCTURE — write exactly these five sections:
    Each risk must directly reference a specific signal finding.
 
 Do not add any sections beyond these five.
-Do not use bullet points inside sections — write in prose.
+Do not use bullet points inside sections - write in prose.
 """
-
     return prompt
 
-
-# ── CALL GEMINI ───────────────────────────────────────────────────────────────
 
 def get_commentary(prompt):
     client = genai.Client(api_key=API_KEY)
@@ -139,18 +138,14 @@ def get_commentary(prompt):
     return None, None
 
 
-# ── VALIDATE OUTPUT ───────────────────────────────────────────────────────────
-
 def validate(commentary, signals):
     issues = []
-
     contradiction_map = {
         "core_operating_margin": ["margin expanded", "margin improving", "margins grew"],
         "fcf_conversion":        ["weak cash", "poor conversion"],
         "net_debt_to_ebitda":    ["dangerously leveraged", "debt crisis"],
         "interest_coverage":     ["cannot cover interest", "interest risk"],
     }
-
     for signal in signals:
         if signal["signal"] == "NEGATIVE":
             metric = signal["metric"]
@@ -158,11 +153,8 @@ def validate(commentary, signals):
                 for phrase in contradiction_map[metric]:
                     if phrase.lower() in commentary.lower():
                         issues.append(f"Possible contradiction: AI used '{phrase}' but signal for {metric} is NEGATIVE.")
-
     return issues
 
-
-# ── SAVE OUTPUT ───────────────────────────────────────────────────────────────
 
 def save_commentary(commentary, model_used):
     output = {
@@ -171,10 +163,8 @@ def save_commentary(commentary, model_used):
     }
     with open("commentary.json", "w") as f:
         json.dump(output, f, indent=2)
-    print("\n✅ commentary.json saved.")
+    print("commentary.json saved.")
 
-
-# ── MAIN ──────────────────────────────────────────────────────────────────────
 
 def run():
     print("Loading analysis data...")
@@ -187,7 +177,7 @@ def run():
     commentary, model_used = get_commentary(prompt)
 
     if not commentary:
-        print("❌ All Gemini models failed. Check your API key.")
+        print("All Gemini models failed. Check your API key.")
         return
 
     print(f"\nModel used: {model_used}")
@@ -199,11 +189,11 @@ def run():
     print("\nValidating output...")
     issues = validate(commentary, data["signals"])
     if issues:
-        print("\n⚠️  VALIDATION WARNINGS:")
+        print("\nVALIDATION WARNINGS:")
         for issue in issues:
             print(f"  - {issue}")
     else:
-        print("✅ No contradictions detected.")
+        print("No contradictions detected.")
 
     save_commentary(commentary, model_used)
 

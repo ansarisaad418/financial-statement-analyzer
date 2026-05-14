@@ -1,10 +1,9 @@
 """
 Financial Statement Analyzer — Streamlit Frontend
-Financial Analysis Dashboard
 
 Pipeline:
-  1. User uploads Excel file
-  2. engine.py runs automatically → produces metrics + signals
+  1. User enters a company name, ticker, or CIK number
+  2. engine.py fetches data from FMP and runs the full analysis pipeline
   3. User clicks "Generate Commentary" → interpreter.py calls Gemini
   4. Full analyst report displayed with charts
 """
@@ -15,7 +14,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import json
 import os
-import tempfile
 
 # ── PAGE CONFIG ───────────────────────────────────────────────────────────────
 
@@ -28,15 +26,24 @@ st.set_page_config(
 
 # ── IMPORT ENGINE & INTERPRETER ───────────────────────────────────────────────
 
-from engine import load_all_statements, normalize, calculate_metrics, generate_signals, build_output
+from engine import (
+    load_all_statements, normalize, calculate_metrics,
+    generate_signals, build_output, search_company, resolve_cik
+)
 from interpreter import build_prompt, get_commentary, validate
+import engine as eng
 
-# ── API KEY — read from Streamlit secrets, fall back to sidebar input ─────────
+# ── API KEYS ──────────────────────────────────────────────────────────────────
 
 try:
-    api_key = st.secrets.get("GEMINI_API_KEY", "")
+    gemini_key = st.secrets.get("GEMINI_API_KEY", "")
 except Exception:
-    api_key = ""
+    gemini_key = ""
+
+try:
+    fmp_key = st.secrets.get("FMP_API_KEY", "")
+except Exception:
+    fmp_key = ""
 
 # ── SESSION STATE ─────────────────────────────────────────────────────────────
 
@@ -46,14 +53,25 @@ if "commentary" not in st.session_state:
     st.session_state.commentary = None
 if "model_used" not in st.session_state:
     st.session_state.model_used = None
+if "search_results" not in st.session_state:
+    st.session_state.search_results = None
+if "selected_ticker" not in st.session_state:
+    st.session_state.selected_ticker = None
 
 # ── SIDEBAR ───────────────────────────────────────────────────────────────────
 
 with st.sidebar:
     st.markdown("## ⚙️ Settings")
 
-    if not api_key:
-        api_key = st.text_input(
+    if not fmp_key:
+        fmp_key = st.text_input(
+            "FMP API Key",
+            type="password",
+            help="Your Financial Modeling Prep API key from financialmodelingprep.com"
+        )
+
+    if not gemini_key:
+        gemini_key = st.text_input(
             "Gemini API Key",
             type="password",
             help="Your Gemini API key from Google AI Studio"
@@ -62,9 +80,9 @@ with st.sidebar:
     st.divider()
     st.markdown("### 📁 About")
     st.info(
-        "This system reads audited financial statements, "
-        "computes deterministic metrics and signals, "
-        "then uses AI strictly for interpretation — "
+        "Enter any public company name, ticker, or CIK number. "
+        "The engine fetches live financial data, computes deterministic "
+        "metrics and signals, then uses AI strictly for interpretation — "
         "never for calculation."
     )
 
@@ -73,53 +91,117 @@ with st.sidebar:
         st.session_state.output = None
         st.session_state.commentary = None
         st.session_state.model_used = None
+        st.session_state.search_results = None
+        st.session_state.selected_ticker = None
         st.rerun()
 
 # ── HEADER ────────────────────────────────────────────────────────────────────
 
 st.title("📊 Financial Statement Analyzer")
-st.caption("Deterministic signal engine + controlled AI interpretation")
+st.caption("Deterministic signal engine + controlled AI interpretation — any public company")
 
 st.divider()
 
-# ── FILE UPLOAD ───────────────────────────────────────────────────────────────
+# ── COMPANY SEARCH ────────────────────────────────────────────────────────────
 
-st.markdown("### 📂 Upload Financial Statements")
-uploaded_file = st.file_uploader(
-    "Upload your Excel file (Income Statement, Balance Sheet, Cash Flow — 3 sheets)",
-    type=["xlsx"]
-)
+if st.session_state.output is None:
 
-if uploaded_file is not None and st.session_state.output is None:
-    with st.spinner("Running engine — computing metrics and signals..."):
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
-                tmp.write(uploaded_file.read())
-                tmp_path = tmp.name
+    st.markdown("### 🔍 Search Company")
+    query = st.text_input(
+        "Company name, ticker symbol, or CIK number",
+        placeholder="e.g.  Apple  /  AAPL  /  320193  /  Microsoft  /  MSFT",
+        key="search_query"
+    )
 
-            import engine as eng
-            eng.FILE_PATH = tmp_path
+    col_search, col_direct = st.columns([1, 1])
 
-            income, balance, cashflow = load_all_statements()
-            normalized = normalize(income, balance, cashflow)
-            metrics = calculate_metrics(normalized)
-            signals = generate_signals(metrics, normalized)
-            output = build_output(normalized, metrics, signals)
+    with col_search:
+        search_btn = st.button("🔎 Search by Name", use_container_width=True,
+                               help="Search for a company by name and pick from results")
+    with col_direct:
+        direct_btn = st.button("⚡ Analyze Directly", type="primary", use_container_width=True,
+                               help="Use the input directly as a ticker symbol or CIK number")
 
-            st.session_state.output = output
-            st.success("✅ Engine complete — metrics and signals computed.")
+    # ── Name Search ───────────────────────────────────────────────────────────
+    if search_btn and query:
+        if not fmp_key:
+            st.error("Please enter your FMP API key in the sidebar.")
+        else:
+            with st.spinner("Searching..."):
+                try:
+                    eng.FMP_API_KEY = fmp_key
+                    results = search_company(query)
+                    if results:
+                        st.session_state.search_results = results
+                    else:
+                        st.warning("No companies found. Try a different name or use the ticker directly.")
+                except Exception as e:
+                    st.error(f"Search error: {e}")
 
-        except Exception as e:
-            st.error(f"❌ Engine error: {e}")
+    # ── Show Search Results ───────────────────────────────────────────────────
+    if st.session_state.search_results:
+        st.markdown("**Select a company:**")
+        options = {
+            f"{r.get('name', r.get('symbol', ''))} ({r.get('symbol', '')}) — {r.get('exchangeShortName', r.get('exchange', ''))}": r.get("symbol")
+            for r in st.session_state.search_results
+            if r.get("symbol")
+        }
+        chosen_label = st.radio("", list(options.keys()), key="company_radio")
+        chosen_ticker = options[chosen_label]
+
+        if st.button("✅ Analyze This Company", type="primary", use_container_width=True):
+            st.session_state.search_results = None
+            st.session_state.selected_ticker = chosen_ticker
+            st.rerun()
+
+    # ── Direct Ticker / CIK Analysis ─────────────────────────────────────────
+    run_analysis = direct_btn or (st.session_state.selected_ticker is not None)
+    ticker_to_use = st.session_state.selected_ticker or (query.strip() if direct_btn else None)
+
+    if run_analysis and ticker_to_use:
+        if not fmp_key:
+            st.error("Please enter your FMP API key in the sidebar.")
+        else:
+            with st.spinner(f"Fetching data and running analysis..."):
+                try:
+                    eng.FMP_API_KEY = fmp_key
+
+                    # CIK resolution
+                    if ticker_to_use.isdigit():
+                        resolved_ticker, resolved_name = resolve_cik(ticker_to_use)
+                        if not resolved_ticker:
+                            st.error(f"Could not resolve CIK {ticker_to_use} to a ticker. Check the number.")
+                            st.stop()
+                        ticker_to_use = resolved_ticker
+
+                    income, balance, cashflow = load_all_statements(ticker_to_use)
+                    normalized = normalize(income, balance, cashflow)
+                    metrics    = calculate_metrics(normalized)
+                    signals    = generate_signals(metrics, normalized)
+                    output     = build_output(normalized, metrics, signals)
+
+                    st.session_state.output = output
+                    st.session_state.selected_ticker = None
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"❌ Analysis error: {e}")
+                    st.session_state.selected_ticker = None
 
 # ── DASHBOARD ─────────────────────────────────────────────────────────────────
 
 if st.session_state.output is not None:
-    output = st.session_state.output
+    output  = st.session_state.output
     metrics = output["metrics_by_year"]
     signals = output["signals"]
     summary = output["signal_summary"]
-    years = [str(y) for y in output["fiscal_years_analyzed"]]
+    years   = [str(y) for y in output["fiscal_years_analyzed"]]
+
+    company_name = output.get("company", output.get("ticker", ""))
+    ticker_sym   = output.get("ticker", "")
+
+    st.markdown(f"## {company_name} ({ticker_sym})")
+    st.caption(f"Data source: {output.get('data_source', 'FMP')}  ·  {len(years)} fiscal years analyzed")
 
     st.divider()
 
@@ -339,13 +421,13 @@ if st.session_state.output is not None:
     st.caption("AI receives only pre-computed signals — it never sees raw numbers or performs calculations.")
 
     if st.button("📝 Generate Analyst Commentary", type="primary", use_container_width=True):
-        if not api_key:
+        if not gemini_key:
             st.error("Please enter your Gemini API key in the sidebar.")
         else:
             with st.spinner("Calling Gemini — generating analyst commentary..."):
                 try:
                     import interpreter as interp
-                    interp.API_KEY = api_key
+                    interp.API_KEY = gemini_key
 
                     prompt = build_prompt(output)
                     commentary, model_used = get_commentary(prompt)
@@ -394,7 +476,7 @@ if st.session_state.output is not None:
         st.download_button(
             label="⬇️ Download Full Commentary",
             data=commentary,
-            file_name="analyst_commentary.txt",
+            file_name=f"{ticker_sym}_analyst_commentary.txt",
             mime="text/plain",
             use_container_width=True
         )

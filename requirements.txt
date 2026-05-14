@@ -3,3 +3,4 @@ openpyxl
 streamlit
 plotly
 google-genai
+requests
